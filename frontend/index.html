@@ -1,0 +1,777 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>XO11 GCS — Ground Control Station</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+<style>
+:root{
+  --bg:#0b0f14; --panel:#121820; --panel2:#0e141b; --line:#1e2936;
+  --text:#d7e1ec; --dim:#7d8fa3; --accent:#22d3ee; --green:#34d399;
+  --amber:#fbbf24; --red:#f87171; --font:"Segoe UI",system-ui,-apple-system,sans-serif;
+  --mono:"Cascadia Code","JetBrains Mono",Consolas,monospace;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html,body{height:100%}
+body{background:var(--bg);color:var(--text);font-family:var(--font);overflow:hidden}
+
+/* ---------- layout ---------- */
+#app{display:grid;height:100vh;
+  grid-template-rows:52px 1fr 210px;
+  grid-template-columns:1fr 340px;
+  grid-template-areas:"header header" "map side" "bottom side"}
+header{grid-area:header;display:flex;align-items:center;gap:14px;
+  padding:0 16px;background:var(--panel);border-bottom:1px solid var(--line)}
+#map-wrap{grid-area:map;position:relative}
+#side{grid-area:side;background:var(--panel);border-left:1px solid var(--line);
+  display:flex;flex-direction:column;overflow:hidden}
+#bottom{grid-area:bottom;background:var(--panel2);border-top:1px solid var(--line);
+  display:grid;grid-template-columns:1fr 1fr 1.2fr;gap:0}
+
+/* ---------- header ---------- */
+.logo{font-weight:800;letter-spacing:2px;font-size:17px}
+.logo span{color:var(--accent)}
+.badge{font-size:11px;color:var(--dim);border:1px solid var(--line);
+  border-radius:4px;padding:2px 8px}
+#conn-badge.ok{color:var(--green);border-color:var(--green)}
+#conn-badge.bad{color:var(--red);border-color:var(--red);animation:blink 1s infinite}
+#mode-badge{font-weight:700;color:var(--accent);border-color:var(--accent);font-size:13px}
+#clock{margin-left:auto;font-family:var(--mono);font-size:13px;color:var(--dim)}
+.hbtn{background:#182230;color:var(--text);border:1px solid var(--line);
+  border-radius:6px;padding:6px 14px;cursor:pointer;font-size:12px;font-weight:600}
+.hbtn:hover{border-color:var(--accent);color:var(--accent)}
+.hbtn.danger:hover{border-color:var(--red);color:var(--red)}
+@keyframes blink{50%{opacity:.35}}
+
+/* ---------- map ---------- */
+#map{position:absolute;inset:0;background:#0a0e13}
+.leaflet-container{background:#0a0e13}
+#map-tools{position:absolute;top:12px;right:12px;z-index:1000;
+  display:flex;flex-direction:column;gap:6px}
+#map-tools button{width:150px;text-align:left}
+#map-tools button.active{border-color:var(--amber);color:var(--amber)}
+.uav-icon{filter:drop-shadow(0 0 6px rgba(34,211,238,.9))}
+.wp-label{background:var(--accent);color:#03252b;border-radius:50%;width:22px;height:22px;
+  display:flex;align-items:center;justify-content:center;font-weight:800;font-size:11px;
+  border:2px solid #fff;box-shadow:0 0 8px rgba(0,0,0,.6)}
+#alert-banner{position:absolute;left:50%;top:12px;transform:translateX(-50%);
+  z-index:1100;display:flex;flex-direction:column;gap:6px;pointer-events:none}
+.banner{padding:8px 18px;border-radius:6px;font-weight:700;font-size:13px;
+  box-shadow:0 4px 14px rgba(0,0,0,.5);white-space:nowrap}
+.banner.warning{background:#4a3606;color:var(--amber);border:1px solid var(--amber)}
+.banner.critical{background:#4a0f0f;color:#fecaca;border:1px solid var(--red);
+  animation:blink 1s infinite}
+
+/* ---------- side panel ---------- */
+.side-title{padding:9px 14px;font-size:11px;font-weight:700;letter-spacing:1.5px;
+  color:var(--dim);border-bottom:1px solid var(--line);background:var(--panel2)}
+#tele-grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line)}
+.tile{background:var(--panel);padding:9px 12px}
+.tile .k{font-size:10px;color:var(--dim);letter-spacing:1px;text-transform:uppercase}
+.tile .v{font-family:var(--mono);font-size:19px;font-weight:600;margin-top:2px}
+.tile .u{font-size:11px;color:var(--dim);margin-left:3px}
+.tile.wide{grid-column:span 2}
+.v.good{color:var(--green)} .v.warn{color:var(--amber)} .v.crit{color:var(--red)}
+#batt-bar{height:6px;background:#1c2733;border-radius:3px;margin-top:6px;overflow:hidden}
+#batt-fill{height:100%;background:var(--green);width:100%;transition:width .5s,background .5s}
+#sig-bars{display:flex;gap:2px;align-items:flex-end;height:18px;margin-top:4px}
+#sig-bars i{width:6px;background:#233040;border-radius:1px;display:block}
+#sig-bars i.on{background:var(--green)}
+#sig-bars i.on.warn{background:var(--amber)} #sig-bars i.on.crit{background:var(--red)}
+#hud{display:flex;justify-content:space-around;padding:8px;border-top:1px solid var(--line)}
+.hud-item{text-align:center}
+#compass{width:56px;height:56px}
+#alerts-list{flex:1;overflow-y:auto;min-height:60px;max-height:130px}
+.alert-row{display:flex;gap:8px;padding:7px 12px;font-size:12px;
+  border-bottom:1px solid var(--line);align-items:center}
+.alert-row.warning{color:var(--amber)} .alert-row.critical{color:var(--red)}
+.alert-row .t{font-family:var(--mono);font-size:10px;color:var(--dim);flex-shrink:0}
+.none-msg{padding:10px 14px;color:var(--dim);font-size:12px;font-style:italic}
+
+/* ---------- bottom: charts + log ---------- */
+.chart-box{border-right:1px solid var(--line);display:flex;flex-direction:column;min-width:0}
+.chart-box h4{font-size:10px;letter-spacing:1px;color:var(--dim);padding:6px 12px 0}
+.chart-holder{flex:1;position:relative;min-height:0;padding:4px 8px 8px}
+#log-box{display:flex;flex-direction:column;min-width:0}
+#log-head{display:flex;align-items:center;padding:5px 12px;gap:8px}
+#log-head h4{font-size:10px;letter-spacing:1px;color:var(--dim);flex:1}
+.mini-btn{background:#182230;color:var(--dim);border:1px solid var(--line);
+  border-radius:4px;padding:2px 10px;font-size:10px;cursor:pointer}
+.mini-btn:hover{color:var(--accent);border-color:var(--accent)}
+#log-list{flex:1;overflow-y:auto;font-family:var(--mono);font-size:11px;
+  padding:0 12px 8px;line-height:1.7}
+.log-line .lt{color:var(--dim)} .log-line .ltype{color:var(--accent);font-weight:600}
+.log-line.warning{color:var(--amber)} .log-line.critical{color:var(--red)}
+.log-line.success{color:var(--green)}
+::-webkit-scrollbar{width:8px;height:8px}
+::-webkit-scrollbar-thumb{background:#243244;border-radius:4px}
+::-webkit-scrollbar-track{background:transparent}
+
+/* ---------- toast ---------- */
+#toast{position:fixed;bottom:230px;left:50%;transform:translateX(-50%);
+  background:#182230;border:1px solid var(--accent);color:var(--text);
+  padding:8px 18px;border-radius:6px;font-size:13px;z-index:2000;opacity:0;
+  transition:opacity .3s;pointer-events:none}
+#toast.show{opacity:1}
+
+@media (max-width:980px){
+  #app{grid-template-columns:1fr;grid-template-rows:52px 45vh 1fr 200px;
+    grid-template-areas:"header" "map" "side" "bottom"}
+  #side{border-left:none;border-top:1px solid var(--line)}
+  #bottom{grid-template-columns:1fr}
+  .chart-box{display:none}
+}
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <div class="logo">XO11 <span>GCS</span></div>
+    <div class="badge" id="conn-badge">CONNECTING…</div>
+    <div class="badge" id="mode-badge">—</div>
+    <div class="badge" id="src-badge">SOURCE: —</div>
+    <button class="hbtn" id="btn-takeoff">▲ TAKEOFF</button>
+    <button class="hbtn" id="btn-auto">AUTO</button>
+    <button class="hbtn" id="btn-hold">HOLD</button>
+    <button class="hbtn danger" id="btn-rth">⌂ RTH</button>
+    <button class="hbtn danger" id="btn-land">▼ LAND</button>
+    <div id="clock">--:--:--</div>
+  </header>
+
+  <div id="map-wrap">
+    <div id="map"></div>
+    <div id="alert-banner"></div>
+    <div id="map-tools">
+      <button class="hbtn" id="btn-wp-mode">+ Add Waypoints</button>
+      <button class="hbtn" id="btn-wp-upload">⇪ Upload Mission</button>
+      <button class="hbtn" id="btn-wp-clear">✕ Clear Mission</button>
+      <button class="hbtn" id="btn-center">◎ Center on UAV</button>
+      <button class="hbtn" id="btn-trail">〰 Clear Trail</button>
+    </div>
+  </div>
+
+  <div id="side">
+    <div class="side-title">LIVE TELEMETRY</div>
+    <div id="tele-grid">
+      <div class="tile"><div class="k">Altitude</div>
+        <div class="v" id="t-alt">—<span class="u">m</span></div></div>
+      <div class="tile"><div class="k">Climb</div>
+        <div class="v" id="t-climb">—<span class="u">m/s</span></div></div>
+      <div class="tile"><div class="k">Airspeed</div>
+        <div class="v" id="t-air">—<span class="u">km/h</span></div></div>
+      <div class="tile"><div class="k">Ground Speed</div>
+        <div class="v" id="t-gnd">—<span class="u">km/h</span></div></div>
+      <div class="tile wide"><div class="k">Battery</div>
+        <div class="v" id="t-batt">—</div>
+        <div id="batt-bar"><div id="batt-fill"></div></div></div>
+      <div class="tile"><div class="k">Flight Time Left</div>
+        <div class="v" id="t-ftr">—</div></div>
+      <div class="tile"><div class="k">Signal <span id="t-rssi" style="font-size:9px"></span></div>
+        <div id="sig-bars"><i></i><i></i><i></i><i></i><i></i></div></div>
+      <div class="tile wide"><div class="k">GPS Position</div>
+        <div class="v" id="t-gps" style="font-size:13px">—</div></div>
+      <div class="tile"><div class="k">Satellites</div>
+        <div class="v" id="t-sats">—</div></div>
+      <div class="tile"><div class="k">Dist. Home</div>
+        <div class="v" id="t-home">—<span class="u">m</span></div></div>
+    </div>
+    <div id="hud">
+      <div class="hud-item"><div class="k" style="font-size:9px;color:var(--dim)">HEADING</div>
+        <svg id="compass" viewBox="0 0 60 60">
+          <circle cx="30" cy="30" r="26" fill="none" stroke="#233040" stroke-width="2"/>
+          <text x="30" y="10" fill="#7d8fa3" font-size="8" text-anchor="middle">N</text>
+          <g id="compass-needle" transform="rotate(0 30 30)">
+            <polygon points="30,10 34,34 30,29 26,34" fill="#22d3ee"/>
+          </g>
+          <text id="compass-val" x="30" y="52" fill="#d7e1ec" font-size="9"
+            text-anchor="middle" font-family="monospace">0°</text>
+        </svg></div>
+      <div class="hud-item"><div class="k" style="font-size:9px;color:var(--dim)">WAYPOINT</div>
+        <div class="v" id="t-wp" style="font-size:17px;margin-top:14px">—</div></div>
+      <div class="hud-item"><div class="k" style="font-size:9px;color:var(--dim)">WIND</div>
+        <div class="v" id="t-wind" style="font-size:15px;margin-top:14px">—</div></div>
+    </div>
+    <div class="side-title">ACTIVE ALERTS</div>
+    <div id="alerts-list"><div class="none-msg">No active alerts</div></div>
+  </div>
+
+  <div id="bottom">
+    <div class="chart-box"><h4>ALTITUDE (m)</h4>
+      <div class="chart-holder"><canvas id="chart-alt"></canvas></div></div>
+    <div class="chart-box"><h4>BATTERY (%) / SPEED (km/h)</h4>
+      <div class="chart-holder"><canvas id="chart-batt"></canvas></div></div>
+    <div id="log-box">
+      <div id="log-head"><h4>MISSION LOG</h4>
+        <button class="mini-btn" id="btn-export-txt">Export .txt</button>
+        <button class="mini-btn" id="btn-export-csv">Export .csv</button></div>
+      <div id="log-list"></div>
+    </div>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script>
+/* ======================================================================
+   XO11 GCS front-end
+   - Connects to backend SSE at /stream (auto-reconnect)
+   - If no backend is reachable (static deploy on Vercel/Netlify),
+     falls back to a built-in DEMO simulator so the UI stays live.
+   ====================================================================== */
+"use strict";
+const $ = id => document.getElementById(id);
+
+/* ---------------- state ---------------- */
+const S = {
+  demo: false,            // running on client-side demo sim?
+  wpMode: false,          // click-to-add-waypoint mode
+  pendingWps: [],         // waypoints placed but not yet uploaded
+  follow: true,
+  lastTele: null,
+  logSeen: 0,
+};
+
+/* ---------------- map ---------------- */
+const map = L.map("map", { zoomControl: true }).setView([12.9716, 77.5946], 15);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+  maxZoom: 19, attribution: "© OpenStreetMap"
+}).addTo(map);
+
+const uavIcon = L.divIcon({
+  className: "", iconSize: [34, 34], iconAnchor: [17, 17],
+  html: `<svg class="uav-icon" id="uav-svg" width="34" height="34" viewBox="0 0 34 34">
+    <g id="uav-rot" transform="rotate(0 17 17)">
+      <polygon points="17,3 24,26 17,20 10,26" fill="#22d3ee" stroke="#fff" stroke-width="1.2"/>
+    </g></svg>`
+});
+const homeIcon = L.divIcon({
+  className: "", iconSize: [26, 26], iconAnchor: [13, 13],
+  html: `<svg width="26" height="26" viewBox="0 0 26 26">
+    <circle cx="13" cy="13" r="11" fill="#34d399" opacity="0.25"/>
+    <circle cx="13" cy="13" r="7" fill="#34d399" stroke="#fff" stroke-width="1.5"/>
+    <text x="13" y="17" text-anchor="middle" font-size="9" font-weight="800" fill="#052">H</text></svg>`
+});
+
+const uavMarker  = L.marker([12.9716, 77.5946], { icon: uavIcon, zIndexOffset: 1000 }).addTo(map);
+const homeMarker = L.marker([12.9716, 77.5946], { icon: homeIcon }).addTo(map)
+  .bindTooltip("Home / Launch point");
+const trail   = L.polyline([], { color: "#22d3ee", weight: 2.5, opacity: 0.85 }).addTo(map);
+const missionLine = L.polyline([], { color: "#fbbf24", weight: 2, dashArray: "6 6" }).addTo(map);
+let wpMarkers = [];
+
+function redrawMission() {
+  wpMarkers.forEach(m => map.removeLayer(m));
+  wpMarkers = S.pendingWps.map((w, i) =>
+    L.marker([w.lat, w.lon], {
+      icon: L.divIcon({ className: "", iconSize: [22, 22], iconAnchor: [11, 11],
+        html: `<div class="wp-label">${i + 1}</div>` })
+    }).addTo(map).bindTooltip(`WP ${i + 1} — alt ${w.alt} m`));
+  missionLine.setLatLngs(S.pendingWps.map(w => [w.lat, w.lon]));
+}
+
+map.on("click", e => {
+  if (!S.wpMode) return;
+  S.pendingWps.push({ lat: +e.latlng.lat.toFixed(6), lon: +e.latlng.lng.toFixed(6), alt: 60 });
+  redrawMission();
+  toast(`Waypoint ${S.pendingWps.length} placed — press "Upload Mission" to send`);
+});
+map.on("dragstart", () => { S.follow = false; });
+
+/* ---------------- charts ---------------- */
+Chart.defaults.color = "#7d8fa3";
+Chart.defaults.font.size = 10;
+const MAXPTS = 120;
+function mkChart(ctx, datasets, y2) {
+  return new Chart(ctx, {
+    type: "line",
+    data: { labels: [], datasets },
+    options: {
+      responsive: true, maintainAspectRatio: false, animation: false,
+      interaction: { intersect: false },
+      plugins: { legend: { display: datasets.length > 1,
+        labels: { boxWidth: 8, boxHeight: 8 } } },
+      scales: {
+        x: { display: false },
+        y: { grid: { color: "#1a2430" }, beginAtZero: true },
+        ...(y2 ? { y2: { position: "right", grid: { display: false }, beginAtZero: true } } : {})
+      },
+      elements: { point: { radius: 0 }, line: { borderWidth: 1.6, tension: 0.35 } }
+    }
+  });
+}
+const chAlt = mkChart($("chart-alt").getContext("2d"),
+  [{ label: "Altitude", data: [], borderColor: "#22d3ee",
+     backgroundColor: "rgba(34,211,238,.08)", fill: true }]);
+const chBatt = mkChart($("chart-batt").getContext("2d"),
+  [{ label: "Battery %", data: [], borderColor: "#34d399", yAxisID: "y" },
+   { label: "Gnd speed", data: [], borderColor: "#fbbf24", yAxisID: "y2" }], true);
+
+function pushChart(ch, ...vals) {
+  ch.data.labels.push("");
+  vals.forEach((v, i) => ch.data.datasets[i].data.push(v));
+  if (ch.data.labels.length > MAXPTS) {
+    ch.data.labels.shift();
+    ch.data.datasets.forEach(d => d.data.shift());
+  }
+  ch.update("none");
+}
+
+/* ---------------- UI update ---------------- */
+function fmtTime(s) {
+  if (s == null) return "—";
+  const m = Math.floor(s / 60), r = s % 60;
+  return `${m}:${String(r).padStart(2, "0")}`;
+}
+function sevClass(v, warn, crit, invert) {
+  // invert=false: low is bad; invert=true: high is bad
+  if (!invert) return v < crit ? "crit" : v < warn ? "warn" : "good";
+  return v > crit ? "crit" : v > warn ? "warn" : "good";
+}
+
+function render(tele) {
+  S.lastTele = tele;
+  if (tele.lat == null) return;
+
+  // header
+  $("mode-badge").textContent = tele.mode || "—";
+  $("clock").textContent = new Date().toLocaleTimeString();
+
+  // map
+  const pos = [tele.lat, tele.lon];
+  uavMarker.setLatLng(pos);
+  const rot = document.querySelector("#uav-rot");
+  if (rot) rot.setAttribute("transform", `rotate(${tele.heading || 0} 17 17)`);
+  if (tele.armed && tele.alt > 0.5) {
+    const pts = trail.getLatLngs();
+    const last = pts[pts.length - 1];
+    if (!last || map.distance(last, pos) > 1.5) {
+      trail.addLatLng(pos);
+      if (pts.length > 2000) trail.setLatLngs(pts.slice(-2000));
+    }
+  }
+  if (tele.home) homeMarker.setLatLng([tele.home.lat, tele.home.lon]);
+  if (S.follow) map.panTo(pos, { animate: true, duration: 0.4 });
+
+  // tiles
+  const set = (id, txt, cls) => { const el = $(id);
+    el.childNodes[0].nodeValue = txt;
+    el.className = "v" + (cls ? " " + cls : "") + (id === "t-gps" ? "" : ""); };
+  $("t-alt").innerHTML  = `${(tele.alt ?? 0).toFixed(1)}<span class="u">m</span>`;
+  $("t-climb").innerHTML = `${(tele.climb ?? 0) >= 0 ? "+" : ""}${(tele.climb ?? 0).toFixed(1)}<span class="u">m/s</span>`;
+  $("t-air").innerHTML  = `${(tele.airspeed ?? 0).toFixed(1)}<span class="u">km/h</span>`;
+  $("t-gnd").innerHTML  = `${(tele.groundspeed ?? 0).toFixed(1)}<span class="u">km/h</span>`;
+
+  const bp = tele.battery_pct ?? 0, bv = tele.battery_voltage ?? 0;
+  const battEl = $("t-batt");
+  battEl.textContent = `${bp.toFixed(0)}%  ·  ${bv.toFixed(1)} V` +
+    (tele.current_a ? `  ·  ${tele.current_a.toFixed(1)} A` : "");
+  battEl.className = "v " + sevClass(bp, 25, 15, false);
+  const fill = $("batt-fill");
+  fill.style.width = Math.max(0, Math.min(100, bp)) + "%";
+  fill.style.background = bp < 15 ? "var(--red)" : bp < 25 ? "var(--amber)" : "var(--green)";
+
+  $("t-ftr").textContent = fmtTime(tele.flight_time_remaining_s);
+  $("t-gps").textContent = `${tele.lat.toFixed(6)}, ${tele.lon.toFixed(6)}`;
+  const satsEl = $("t-sats");
+  satsEl.textContent = tele.sats ?? "—";
+  satsEl.className = "v " + sevClass(tele.sats ?? 0, 8, 6, false);
+  $("t-home").innerHTML = `${(tele.dist_home_m ?? 0).toFixed(0)}<span class="u">m</span>`;
+
+  // signal bars
+  const sig = tele.signal_pct ?? 0;
+  $("t-rssi").textContent = tele.rssi_dbm ? `${tele.rssi_dbm} dBm` : "";
+  const bars = document.querySelectorAll("#sig-bars i");
+  bars.forEach((b, i) => {
+    b.style.height = (5 + i * 3.2) + "px";
+    const on = sig > (i + 0.5) * 20;
+    b.className = on ? ("on" + (sig < 35 ? " crit" : sig < 55 ? " warn" : "")) : "";
+  });
+
+  // hud
+  const nd = document.querySelector("#compass-needle");
+  if (nd) nd.setAttribute("transform", `rotate(${tele.heading || 0} 30 30)`);
+  $("compass-val").textContent = `${Math.round(tele.heading || 0)}°`;
+  $("t-wp").textContent = tele.wp_total ? `${Math.min(tele.wp_index + 1, tele.wp_total)}/${tele.wp_total}` : "—";
+  $("t-wind").textContent = tele.wind_kmh != null ? `${tele.wind_kmh} km/h` : "—";
+
+  pushChart(chAlt, tele.alt ?? 0);
+  pushChart(chBatt, bp, tele.groundspeed ?? 0);
+}
+
+/* ---------------- alerts ---------------- */
+function renderAlerts(active, changes) {
+  const list = $("alerts-list");
+  if (!active.length) {
+    list.innerHTML = '<div class="none-msg">No active alerts</div>';
+  } else {
+    list.innerHTML = active.map(a =>
+      `<div class="alert-row ${a.severity}">
+        <span class="t">${(a.raised_at || "").slice(11, 19)}</span>
+        <span>${a.severity === "critical" ? "⛔" : "⚠"} ${a.message}</span>
+      </div>`).join("");
+  }
+  // banners on map for raised alerts
+  const banner = $("alert-banner");
+  banner.innerHTML = active.map(a =>
+    `<div class="banner ${a.severity}">${a.severity === "critical" ? "⛔" : "⚠"} ${a.message}</div>`
+  ).join("");
+  (changes || []).forEach(c => {
+    if (c.action === "raised" && c.severity === "critical") beep(3);
+    else if (c.action === "raised") beep(1);
+  });
+}
+
+let audioCtx = null;
+function beep(n) {
+  try {
+    audioCtx = audioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    for (let i = 0; i < n; i++) {
+      const o = audioCtx.createOscillator(), g = audioCtx.createGain();
+      o.frequency.value = n >= 3 ? 880 : 620; o.type = "square";
+      g.gain.value = 0.04;
+      o.connect(g); g.connect(audioCtx.destination);
+      o.start(audioCtx.currentTime + i * 0.25);
+      o.stop(audioCtx.currentTime + i * 0.25 + 0.14);
+    }
+  } catch (e) { /* audio blocked until user gesture — fine */ }
+}
+
+/* ---------------- mission log ---------------- */
+const clientLog = [];   // used in demo mode / merged view
+function addLogLines(entries) {
+  const list = $("log-list");
+  const atBottom = list.scrollTop + list.clientHeight >= list.scrollHeight - 30;
+  entries.forEach(e => {
+    clientLog.push(e);
+    const div = document.createElement("div");
+    div.className = "log-line " + (e.severity || "info");
+    div.innerHTML = `<span class="lt">${e.ts.slice(11, 19)}</span> ` +
+      `<span class="ltype">[${e.type}]</span> ${e.message}`;
+    list.appendChild(div);
+  });
+  while (list.children.length > 400) list.removeChild(list.firstChild);
+  if (atBottom) list.scrollTop = list.scrollHeight;
+}
+
+function exportLog(fmt) {
+  if (!S.demo) { window.open(`/api/log/export?format=${fmt}`, "_blank"); return; }
+  // demo mode: build file client-side
+  let content, mime;
+  if (fmt === "csv") {
+    content = "ts,type,severity,message\n" + clientLog.map(e =>
+      `${e.ts},${e.type},${e.severity},"${e.message.replace(/"/g, '""')}"`).join("\n");
+    mime = "text/csv";
+  } else {
+    content = clientLog.map(e =>
+      `[${e.ts}] [${(e.severity || "info").toUpperCase()}] [${e.type}] ${e.message}`).join("\n");
+    mime = "text/plain";
+  }
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([content], { type: mime }));
+  a.download = `xo11_mission_log.${fmt}`;
+  a.click();
+}
+
+/* ---------------- toast ---------------- */
+let toastTimer = null;
+function toast(msg) {
+  const t = $("toast");
+  t.textContent = msg; t.classList.add("show");
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => t.classList.remove("show"), 2600);
+}
+
+/* ---------------- backend link (SSE with auto-reconnect) ---------------- */
+let es = null, reconnectDelay = 1000, gotFirstMessage = false;
+function connectSSE() {
+  try { es = new EventSource("/stream"); } catch (e) { startDemo(); return; }
+  es.onmessage = ev => {
+    gotFirstMessage = true; reconnectDelay = 1000;
+    setConn(true);
+    const p = JSON.parse(ev.data);
+    render(p.telemetry);
+    renderAlerts(p.alerts || [], p.alert_changes || []);
+    if (p.log_tail && p.log_tail.length) addLogLines(p.log_tail);
+  };
+  es.onerror = () => {
+    es.close(); setConn(false);
+    if (!gotFirstMessage) { startDemo(); return; }   // backend never answered
+    setTimeout(connectSSE, reconnectDelay);
+    reconnectDelay = Math.min(reconnectDelay * 2, 10000);
+  };
+}
+function setConn(ok) {
+  const b = $("conn-badge");
+  if (S.demo) { b.textContent = "DEMO MODE"; b.className = "badge ok"; return; }
+  b.textContent = ok ? "LINK OK" : "LINK LOST — RETRYING";
+  b.className = "badge " + (ok ? "ok" : "bad");
+}
+
+async function apiPost(path, body) {
+  if (S.demo) return demoCommand(path, body);
+  try {
+    const r = await fetch(path, {
+      method: body === null ? "DELETE" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body: body ? JSON.stringify(body) : undefined
+    });
+    const j = await r.json();
+    toast(j.message || j.error || (j.ok ? "OK" : "Failed"));
+    return j;
+  } catch (e) { toast("Backend unreachable"); return { ok: false }; }
+}
+
+/* ---------------- initial log fetch ---------------- */
+async function loadInitialLog() {
+  if (S.demo) return;
+  try {
+    const r = await fetch("/api/log");
+    const entries = await r.json();
+    addLogLines(entries.slice(-100));
+    S.logSeen = entries.length;
+  } catch (e) { /* demo fallback will handle */ }
+}
+async function loadStatus() {
+  if (S.demo) return;
+  try {
+    const r = await fetch("/api/status");
+    const j = await r.json();
+    $("src-badge").textContent = "SOURCE: " + (j.source || "sim").toUpperCase();
+  } catch (e) { /* ignore */ }
+}
+
+/* ---------------- controls ---------------- */
+$("btn-takeoff").onclick = () => apiPost("/api/command/takeoff", {});
+$("btn-auto").onclick    = () => apiPost("/api/command/auto", {});
+$("btn-hold").onclick    = () => apiPost("/api/command/hold", {});
+$("btn-rth").onclick     = () => apiPost("/api/command/rth", {});
+$("btn-land").onclick    = () => apiPost("/api/command/land", {});
+$("btn-center").onclick  = () => { S.follow = true;
+  if (S.lastTele && S.lastTele.lat != null) map.panTo([S.lastTele.lat, S.lastTele.lon]); };
+$("btn-trail").onclick   = () => trail.setLatLngs([]);
+$("btn-wp-mode").onclick = () => {
+  S.wpMode = !S.wpMode;
+  $("btn-wp-mode").classList.toggle("active", S.wpMode);
+  $("btn-wp-mode").textContent = S.wpMode ? "● Placing… (click map)" : "+ Add Waypoints";
+  if (S.wpMode) toast("Click on the map to place waypoints");
+};
+$("btn-wp-upload").onclick = async () => {
+  if (!S.pendingWps.length) { toast("No waypoints placed yet"); return; }
+  const j = await apiPost("/api/waypoints", { waypoints: S.pendingWps });
+  if (j.ok) { S.wpMode = false;
+    $("btn-wp-mode").classList.remove("active");
+    $("btn-wp-mode").textContent = "+ Add Waypoints"; }
+};
+$("btn-wp-clear").onclick = async () => {
+  S.pendingWps = []; redrawMission();
+  await apiPost("/api/waypoints", null);
+};
+$("btn-export-txt").onclick = () => exportLog("txt");
+$("btn-export-csv").onclick = () => exportLog("csv");
+
+/* ---------------- DEMO MODE (client-side sim fallback) ----------------
+   Mirrors the backend physics closely enough for a static deploy demo.  */
+let demo = null;
+function startDemo() {
+  if (S.demo) return;
+  S.demo = true;
+  setConn(true);
+  $("src-badge").textContent = "SOURCE: BROWSER DEMO";
+  addLogLines([logEntry("SYSTEM", "No backend detected — running built-in browser demo simulator", "info")]);
+  demo = new DemoSim();
+  demo.alerts = new DemoAlerts();
+  setInterval(() => {
+    const t = demo.step();
+    demo.events.splice(0).forEach(e => addLogLines([e]));
+    const changes = demo.alerts.evaluate(t);
+    render(t);
+    renderAlerts(demo.alerts.active, changes);
+  }, 250);
+}
+function logEntry(type, message, severity) {
+  return { ts: new Date().toISOString(), type, severity: severity || "info", message };
+}
+function demoCommand(path, body) {
+  if (path.includes("/api/waypoints")) {
+    if (body === null) { demo.wps = []; demo.wpi = 0; toast("Mission cleared");
+      addLogLines([logEntry("MISSION", "Mission cleared")]); return { ok: true }; }
+    demo.wps = body.waypoints.slice(); demo.wpi = 0;
+    toast(`${demo.wps.length} waypoints accepted`);
+    addLogLines([logEntry("MISSION", `Mission uploaded — ${demo.wps.length} waypoints`)]);
+    return { ok: true };
+  }
+  const cmd = path.split("/").pop();
+  const r = demo.command(cmd);
+  toast(r.message);
+  return r;
+}
+
+class DemoSim {
+  constructor() {
+    this.homeLat = 12.9716; this.homeLon = 77.5946;
+    this.lat = this.homeLat; this.lon = this.homeLon;
+    this.alt = 0; this.hdg = 0; this.air = 0; this.gnd = 0; this.climb = 0;
+    this.mode = "IDLE"; this.armed = false;
+    this.soc = 1.0; this.sats = 14; this.sig = 99;
+    this.wps = []; this.wpi = 0;
+    this.windD = Math.random() * 360; this.windS = 6 + Math.random() * 8;
+    this.events = []; this.last = performance.now();
+  }
+  ev(type, message, severity) { this.events.push(logEntry(type, message, severity)); }
+  setMode(m) { if (m !== this.mode) { this.ev("MODE", `Flight mode changed: ${this.mode} -> ${m}`); this.mode = m; } }
+  command(cmd) {
+    cmd = cmd.toUpperCase();
+    if (cmd === "TAKEOFF") {
+      if (this.mode !== "IDLE") return { ok: false, message: "UAV is not idle" };
+      this.armed = true; this.setMode("TAKEOFF");
+      this.ev("ARM", "UAV armed — takeoff initiated");
+      return { ok: true, message: "Takeoff initiated" };
+    }
+    if (!this.armed) return { ok: false, message: "UAV is disarmed — take off first" };
+    if (cmd === "AUTO" && !this.wps.length) return { ok: false, message: "No mission uploaded — add waypoints first" };
+    if (["AUTO", "HOLD", "RTH", "LAND", "MANUAL"].includes(cmd)) {
+      this.setMode(cmd); return { ok: true, message: "Mode set to " + cmd };
+    }
+    return { ok: false, message: "Unknown command" };
+  }
+  distM(aLat, aLon, bLat, bLon) {
+    const R = 6371000, p1 = aLat * Math.PI / 180, p2 = bLat * Math.PI / 180;
+    const dp = (bLat - aLat) * Math.PI / 180, dl = (bLon - aLon) * Math.PI / 180;
+    const h = Math.sin(dp / 2) ** 2 + Math.cos(p1) * Math.cos(p2) * Math.sin(dl / 2) ** 2;
+    return 2 * R * Math.asin(Math.sqrt(h));
+  }
+  brg(aLat, aLon, bLat, bLon) {
+    const p1 = aLat * Math.PI / 180, p2 = bLat * Math.PI / 180;
+    const dl = (bLon - aLon) * Math.PI / 180;
+    const x = Math.sin(dl) * Math.cos(p2);
+    const y = Math.cos(p1) * Math.sin(p2) - Math.sin(p1) * Math.cos(p2) * Math.cos(dl);
+    return (Math.atan2(x, y) * 180 / Math.PI + 360) % 360;
+  }
+  step() {
+    const now = performance.now();
+    const dt = Math.min((now - this.last) / 1000, 1); this.last = now;
+    let tgtSpd = 0, tgtAlt = this.alt, tgtHdg = this.hdg;
+
+    if (this.mode === "TAKEOFF") {
+      tgtAlt = 60;
+      if (this.alt >= 59.5) { this.ev("NAV", "Takeoff complete — reached 60 m");
+        this.setMode(this.wps.length ? "AUTO" : "HOLD"); }
+    } else if (this.mode === "AUTO") {
+      if (this.wpi >= this.wps.length) { this.ev("NAV", "Mission complete — returning home"); this.setMode("RTH"); }
+      else {
+        const w = this.wps[this.wpi];
+        const d = this.distM(this.lat, this.lon, w.lat, w.lon);
+        tgtHdg = this.brg(this.lat, this.lon, w.lat, w.lon);
+        tgtAlt = w.alt || 60;
+        tgtSpd = Math.min(45, Math.max(12, d / 4 * 3.6));
+        if (d < 12) { this.ev("WAYPOINT", `Waypoint ${this.wpi + 1}/${this.wps.length} reached`, "success"); this.wpi++; }
+      }
+    } else if (this.mode === "RTH") {
+      const d = this.distM(this.lat, this.lon, this.homeLat, this.homeLon);
+      if (d < 12) { this.ev("NAV", "Arrived over home — landing"); this.setMode("LAND"); }
+      else { tgtHdg = this.brg(this.lat, this.lon, this.homeLat, this.homeLon);
+        tgtAlt = Math.max(this.alt, 40); tgtSpd = Math.min(45, Math.max(12, d / 4 * 3.6)); }
+    } else if (this.mode === "LAND") {
+      tgtAlt = 0;
+      if (this.alt <= 0.3) { this.alt = 0; this.armed = false;
+        this.ev("DISARM", "Touchdown — UAV disarmed"); this.setMode("IDLE"); }
+    } else if (this.mode === "MANUAL") {
+      tgtSpd = 27; tgtHdg = (this.hdg + (Math.random() - 0.5) * 12 * dt * 4) % 360;
+      tgtAlt = Math.max(15, Math.min(120, this.alt + (Math.random() - 0.5)));
+    } else if (this.mode === "HOLD") { tgtAlt = Math.max(this.alt, 20); }
+
+    // heading turn-rate limit
+    let err = ((tgtHdg - this.hdg + 540) % 360) - 180;
+    const mt = 45 * dt;
+    this.hdg = (this.hdg + Math.max(-mt, Math.min(mt, err)) + 360) % 360;
+    // speed / alt
+    this.air += (tgtSpd - this.air) * Math.min(1, 0.8 * dt);
+    const wind = (this.windS) * -Math.cos((this.windD - this.hdg) * Math.PI / 180);
+    this.gnd = Math.max(0, this.air + wind);
+    const aerr = tgtAlt - this.alt, rate = aerr > 0 ? 2.5 : -1.8;
+    if (Math.abs(aerr) < Math.abs(rate) * dt) { this.climb = 0; this.alt = tgtAlt; }
+    else { this.climb = rate; this.alt += rate * dt; }
+    if (this.gnd > 0.1 && this.alt > 0.2) {
+      const d = this.gnd / 3.6 * dt, br = this.hdg * Math.PI / 180;
+      this.lat += (d * Math.cos(br)) / 6371000 * 180 / Math.PI;
+      this.lon += (d * Math.sin(br)) / (6371000 * Math.cos(this.lat * Math.PI / 180)) * 180 / Math.PI;
+    }
+    // battery (accelerated for demo: drains ~1%/6s while flying)
+    let pw = !this.armed ? 4 : this.climb > 0.5 ? 560 : this.air > 5 ? 410 : this.alt > 0.5 ? 320 : 4;
+    this.soc = Math.max(0, this.soc - pw * dt / 3600 / 60);   // 60 Wh pack => visible drain
+    const cellV = 3.3 + 0.9 * Math.pow(this.soc, 0.7);
+    const volts = cellV * 6 - (pw / 22 / 6) * 0.072;
+    // sats / signal
+    if (Math.random() < 0.05) this.sats = Math.max(4, Math.min(18, this.sats + Math.round((Math.random() - 0.45) * 3)));
+    const dh = this.distM(this.lat, this.lon, this.homeLat, this.homeLon);
+    const rssi = Math.max(-110, Math.min(-40, -40 - 22 * Math.log10(Math.max(5, dh) / 5) + (Math.random() - 0.5) * 3));
+    this.sig = Math.max(0, Math.min(100, (rssi + 110) / 60 * 100));
+    // failsafe
+    if (this.armed && this.soc * 100 < 15 && !["RTH", "LAND", "IDLE"].includes(this.mode)) {
+      this.ev("FAILSAFE", "Battery critical — automatic Return-To-Home engaged", "critical");
+      this.setMode("RTH");
+    }
+    const cur = pw / (volts || 22);
+    return {
+      ts: Date.now() / 1000, lat: this.lat, lon: this.lon, alt: +this.alt.toFixed(1),
+      heading: +this.hdg.toFixed(1), airspeed: +this.air.toFixed(1),
+      groundspeed: +this.gnd.toFixed(1), climb: +this.climb.toFixed(2),
+      mode: this.mode, armed: this.armed,
+      battery_voltage: +volts.toFixed(2), battery_pct: +(this.soc * 100).toFixed(1),
+      current_a: +cur.toFixed(1),
+      flight_time_remaining_s: this.armed && cur > 1 ?
+        Math.max(0, Math.floor((this.soc - 0.10) * 60 / (cur * volts) * 3600)) : null,
+      sats: this.sats, hdop: +(12 / Math.max(4, this.sats)).toFixed(2),
+      signal_pct: +this.sig.toFixed(1), rssi_dbm: +rssi.toFixed(1),
+      home: { lat: this.homeLat, lon: this.homeLon },
+      wind_kmh: +this.windS.toFixed(1), wind_dir: Math.round(this.windD),
+      wp_index: this.wpi, wp_total: this.wps.length, dist_home_m: +dh.toFixed(1),
+      link_ok: true
+    };
+  }
+}
+
+class DemoAlerts {
+  constructor() {
+    this.active = [];
+    this.rules = [
+      ["BATTERY_CRITICAL", "critical", t => t.battery_pct < 15, t => t.battery_pct >= 17,
+        t => `Battery CRITICAL: ${t.battery_pct.toFixed(0)}% (${t.battery_voltage.toFixed(1)} V) — land immediately`],
+      ["BATTERY_LOW", "warning", t => t.battery_pct < 25 && t.battery_pct >= 15, t => t.battery_pct >= 27,
+        t => `Battery LOW: ${t.battery_pct.toFixed(0)}% (${t.battery_voltage.toFixed(1)} V)`],
+      ["GPS_LOST", "warning", t => t.sats < 6, t => t.sats >= 7,
+        t => `GPS degraded: only ${t.sats} satellites locked`],
+      ["SIGNAL_WEAK", "warning", t => t.signal_pct < 35, t => t.signal_pct >= 45,
+        t => `Signal WEAK: link quality ${t.signal_pct.toFixed(0)}%`],
+    ];
+  }
+  evaluate(t) {
+    const changes = [];
+    this.rules.forEach(([id, sev, trig, clear, msg]) => {
+      const idx = this.active.findIndex(a => a.id === id);
+      if (idx === -1 && trig(t)) {
+        const a = { id, severity: sev, message: msg(t),
+          raised_at: new Date().toISOString() };
+        this.active.push(a);
+        addLogLines([logEntry("ALERT", a.message, sev)]);
+        changes.push({ action: "raised", ...a });
+      } else if (idx !== -1 && clear(t)) {
+        const [a] = this.active.splice(idx, 1);
+        addLogLines([logEntry("ALERT", `Cleared: ${id.replace(/_/g, " ")}`, "info")]);
+        changes.push({ action: "cleared", ...a });
+      } else if (idx !== -1) {
+        this.active[idx].message = msg(t);   // keep live values in banner
+      }
+    });
+    return changes;
+  }
+}
+
+/* ---------------- boot ---------------- */
+setInterval(() => { $("clock").textContent = new Date().toLocaleTimeString(); }, 1000);
+loadStatus(); loadInitialLog(); connectSSE();
+</script>
+</body>
+</html>
