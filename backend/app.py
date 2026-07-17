@@ -421,6 +421,13 @@ def api_command(cmd):
     cmd = cmd.lower()
     if cmd == "takeoff":
         ok, msg = sim.arm_and_takeoff()
+    elif cmd == "reset":
+        ok, msg = sim.reset()
+        if ok:
+            # clear any latched alerts so the fresh flight starts clean
+            with alerts._lock:
+                alerts.active.clear()
+                alerts._pending.clear()
     elif cmd in ("auto", "manual", "hold", "rth", "land"):
         ok, msg = sim.set_mode(cmd)
     else:

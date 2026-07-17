@@ -212,6 +212,33 @@ class UAVSimulator:
             if self.mode == "AUTO":
                 self._set_mode("HOLD")
 
+    def reset(self):
+        """Full simulation reset: UAV back at home, fresh pack, mission cleared.
+        Refuses mid-flight — land or RTH first (mirrors real ops discipline)."""
+        with self._lock:
+            if self.armed and self.alt > 0.5:
+                return False, "Cannot reset mid-flight — LAND or RTH first"
+            self.lat, self.lon = self.home_lat, self.home_lon
+            self.alt = 0.0
+            self.heading = 0.0
+            self.airspeed = self.groundspeed = self.climb = 0.0
+            self.mode = "IDLE"
+            self.armed = False
+            self.soc = 1.0
+            self.batt_v = soc_to_cell_v(1.0) * CELL_COUNT
+            self.batt_pct = 100.0
+            self.current_a = 0.0
+            self._power_ema = None
+            self._fence_breached = False
+            self.waypoints = []
+            self.wp_index = 0
+            self.sats = 14
+            self.hdop = 0.8
+            self._gps_episode_t = 0.0
+            self._gps_healthy_sats = 14
+            self._event("SYSTEM", "Simulation reset — battery 100%, UAV at home, mission cleared")
+            return True, "Simulation reset"
+
     def drain_events(self):
         with self._lock:
             ev, self._events = self._events, []

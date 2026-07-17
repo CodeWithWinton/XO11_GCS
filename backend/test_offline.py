@@ -269,6 +269,23 @@ check("exhausted battery forces LAND/disarm",
 # snapshot exposes geofence for the UI
 check("snapshot carries geofence_m", UAVSimulator().snapshot()["geofence_m"] == 1500.0)
 
+# ================= reset =================
+sr = UAVSimulator(tick_hz=4)
+sr.arm_and_takeoff()
+sr.alt = 50.0
+ok, msg = sr.reset()
+check("reset refused mid-flight", not ok, f"({msg})")
+sr.alt = 0.0; sr.armed = False
+sr.soc = 0.4; sr.set_waypoints([{"lat": sr.home_lat + 0.001, "lon": sr.home_lon}])
+sr.lat = sr.home_lat + 0.01
+ok, msg = sr.reset()
+snap = sr.snapshot()
+check("reset restores full battery", ok and snap["battery_pct"] == 100.0)
+check("reset returns UAV to home", snap["lat"] == sr.home_lat and snap["dist_home_m"] == 0.0)
+check("reset clears mission", snap["wp_total"] == 0)
+check("reset -> IDLE disarmed", snap["mode"] == "IDLE" and not snap["armed"])
+check("reset logged", any("reset" in m.lower() for _, m in sr.drain_events()))
+
 print()
 if FAIL:
     print(f"{len(FAIL)} FAILURES: {FAIL}"); sys.exit(1)

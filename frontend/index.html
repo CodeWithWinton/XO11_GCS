@@ -24,17 +24,20 @@ html,body{height:100%}
 body{background:var(--bg);color:var(--text);font-family:var(--font);overflow:hidden}
 
 /* ---------- layout ---------- */
-#app{display:grid;height:100vh;
-  grid-template-rows:52px 1fr 210px;
-  grid-template-columns:1fr 340px;
+/* Zoom-proof grid: header sizes itself (it can wrap at high zoom),
+   the map takes the leftover, and the bottom bar scales with the
+   viewport instead of a fixed px height that can overflow 100vh. */
+#app{display:grid;height:100vh;height:100dvh;
+  grid-template-rows:auto minmax(0,1fr) clamp(150px,24vh,240px);
+  grid-template-columns:minmax(0,1fr) 340px;
   grid-template-areas:"header header" "map side" "bottom side"}
-header{grid-area:header;display:flex;align-items:center;gap:14px;
-  padding:0 16px;background:var(--panel);border-bottom:1px solid var(--line)}
-#map-wrap{grid-area:map;position:relative}
+header{grid-area:header;display:flex;align-items:center;gap:14px;flex-wrap:wrap;
+  padding:8px 16px;background:var(--panel);border-bottom:1px solid var(--line)}
+#map-wrap{grid-area:map;position:relative;min-height:0}
 #side{grid-area:side;background:var(--panel);border-left:1px solid var(--line);
-  display:flex;flex-direction:column;overflow:hidden}
+  display:flex;flex-direction:column;overflow-y:auto;min-height:0}
 #bottom{grid-area:bottom;background:var(--panel2);border-top:1px solid var(--line);
-  display:grid;grid-template-columns:1fr 1fr 1.2fr;gap:0}
+  display:grid;grid-template-columns:1fr 1fr 1.2fr;gap:0;min-height:0}
 
 /* ---------- header ---------- */
 .logo{font-weight:700;letter-spacing:4px;font-size:19px;text-transform:uppercase}
@@ -125,11 +128,15 @@ header{grid-area:header;display:flex;align-items:center;gap:14px;
 .none-msg{padding:10px 14px;color:var(--dim);font-size:12px;font-style:italic}
 
 /* ---------- bottom: charts + log ---------- */
-.chart-box{border-right:1px solid var(--line);display:flex;flex-direction:column;min-width:0}
+.chart-box{border-right:1px solid var(--line);display:flex;flex-direction:column;
+  min-width:0;min-height:0}
 .chart-box h4{font-size:10px;letter-spacing:2.5px;color:var(--dim);padding:6px 12px 0;
   font-weight:700}
-.chart-holder{flex:1;position:relative;min-height:0;padding:4px 8px 8px}
-#log-box{display:flex;flex-direction:column;min-width:0}
+.chart-holder{flex:1;position:relative;min-height:0;margin:4px 8px 8px}
+/* absolutely pin the canvas: prevents the Chart.js resize feedback loop
+   where the canvas grows its own flex parent and gets clipped */
+.chart-holder canvas{position:absolute;inset:0;width:100%!important;height:100%!important}
+#log-box{display:flex;flex-direction:column;min-width:0;min-height:0}
 #log-head{display:flex;align-items:center;padding:5px 12px;gap:8px}
 #log-head h4{font-size:10px;letter-spacing:2.5px;color:var(--dim);flex:1;font-weight:700}
 .mini-btn{background:transparent;color:var(--dim);border:1px solid var(--line2);
@@ -153,7 +160,8 @@ header{grid-area:header;display:flex;align-items:center;gap:14px;
 #toast.show{opacity:1}
 
 @media (max-width:980px){
-  #app{grid-template-columns:1fr;grid-template-rows:52px 45vh 1fr 200px;
+  #app{grid-template-columns:1fr;
+    grid-template-rows:auto 42vh minmax(0,1fr) clamp(140px,22vh,200px);
     grid-template-areas:"header" "map" "side" "bottom"}
   #side{border-left:none;border-top:1px solid var(--line)}
   #bottom{grid-template-columns:1fr}
@@ -176,6 +184,7 @@ header{grid-area:header;display:flex;align-items:center;gap:14px;
     <button class="hbtn danger" id="btn-rth">⌂ RTH</button>
     <button class="hbtn danger" id="btn-land">▼ LAND</button>
     <div id="clock">--:--:--</div>
+    <button class="hbtn danger" id="btn-reset" title="Reset simulation: battery 100%, UAV at home, mission &amp; charts cleared">⟲ RESET</button>
   </header>
 
   <div id="map-wrap">
@@ -363,22 +372,20 @@ function mkChart(ctx, datasets, y2) {
     data: { labels: [], datasets },
     options: {
       responsive: true, maintainAspectRatio: false, animation: false,
-      layout: { padding: { bottom: 4, top: 4 } },
-      clip: false,
       interaction: { intersect: false },
       plugins: { legend: { display: datasets.length > 1,
         labels: { boxWidth: 8, boxHeight: 8 } } },
       scales: {
         // keep tick labels hidden but draw the baseline so charts don't float
         x: { display: true, ticks: { display: false }, grid: { display: false },
-             border: { display: true, color: "#273245", width: 2, z: -1 } },
+             border: { display: true, color: "#273245" } },
         y: { grid: { color: "#131a26" }, border: { display: false },
              beginAtZero: true, grace: "8%" },
         ...(y2 ? { y2: { position: "right", grid: { display: false },
                          border: { display: false },
                          beginAtZero: true, grace: "8%" } } : {})
       },
-      elements: { point: { radius: 0 }, line: { borderWidth: 2, tension: 0.35 } }
+      elements: { point: { radius: 0 }, line: { borderWidth: 1.6, tension: 0.35 } }
     }
   });
 }
@@ -664,6 +671,21 @@ $("btn-auto").onclick    = () => apiPost("/api/command/auto", {});
 $("btn-hold").onclick    = () => apiPost("/api/command/hold", {});
 $("btn-rth").onclick     = () => apiPost("/api/command/rth", {});
 $("btn-land").onclick    = () => apiPost("/api/command/land", {});
+$("btn-reset").onclick   = async () => {
+  const j = await apiPost("/api/command/reset", {});
+  if (j.ok) resetLocalViews();
+};
+function resetLocalViews() {
+  // wipe client-side history so the fresh flight starts on clean instruments
+  trail.setLatLngs([]);
+  S.pendingWps = []; redrawMission();
+  [chAlt, chBatt].forEach(ch => {
+    ch.data.labels = [];
+    ch.data.datasets.forEach(d => d.data = []);
+    ch.update("none");
+  });
+  S.follow = true;
+}
 $("btn-center").onclick  = () => { S.follow = true;
   if (S.lastTele && S.lastTele.lat != null) map.panTo([S.lastTele.lat, S.lastTele.lon]); };
 $("btn-trail").onclick   = () => trail.setLatLngs([]);
@@ -739,6 +761,18 @@ class DemoSim {
   setMode(m) { if (m !== this.mode) { this.ev("MODE", `Flight mode changed: ${this.mode} -> ${m}`); this.mode = m; } }
   command(cmd) {
     cmd = cmd.toUpperCase();
+    if (cmd === "RESET") {
+      if (this.armed && this.alt > 0.5)
+        return { ok: false, message: "Cannot reset mid-flight — LAND or RTH first" };
+      this.lat = this.homeLat; this.lon = this.homeLon;
+      this.alt = 0; this.hdg = 0; this.air = 0; this.gnd = 0; this.climb = 0;
+      this.mode = "IDLE"; this.armed = false;
+      this.soc = 1.0; this.sats = 14;
+      this.wps = []; this.wpi = 0;
+      this.alerts.active = []; this.alerts.pending = {};
+      this.ev("SYSTEM", "Simulation reset — battery 100%, UAV at home, mission cleared");
+      return { ok: true, message: "Simulation reset" };
+    }
     if (cmd === "TAKEOFF") {
       if (this.mode !== "IDLE") return { ok: false, message: "UAV is not idle" };
       this.armed = true; this.setMode("TAKEOFF");
