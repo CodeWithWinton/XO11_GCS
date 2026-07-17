@@ -162,12 +162,14 @@ header{grid-area:header;display:flex;align-items:center;gap:14px;flex-wrap:wrap;
   border:1px solid var(--line2);border-radius:4px;overflow:hidden;background:#04070b;
   box-shadow:0 10px 34px rgba(0,0,0,.65);perspective:430px}
 #fpv.hidden{display:none}
-#fpv-world{position:absolute;left:50%;top:62%;width:260%;height:260%;
-  transform:translate(-50%,-50%) rotateX(56deg) rotateZ(0deg);
+#fpv-world{position:absolute;left:50%;top:76%;width:260%;height:260%;
+  transform:translate(-50%,-50%) rotateX(58deg) rotateZ(0deg);
   transition:transform .28s linear;will-change:transform}
 #fpv-map{width:100%;height:100%;background:#04070b;pointer-events:none}
-#fpv-sky{position:absolute;left:0;right:0;top:0;height:36%;z-index:2;pointer-events:none;
-  background:linear-gradient(#070d16 0%,#12233a 62%,rgba(18,35,58,0) 100%)}
+/* opaque sky down to exactly 50% — the terrain must START at the artificial
+   horizon line (y=110/220), otherwise the HUD reads as uncalibrated */
+#fpv-sky{position:absolute;left:0;right:0;top:0;height:50%;z-index:2;pointer-events:none;
+  background:linear-gradient(#05090f 0%,#0b1a2e 55%,#1d3f5e 88%,#7fa8c9 100%)}
 #fpv-hud{position:absolute;inset:0;z-index:4;pointer-events:none;width:100%;height:100%}
 #fpv::after{content:"";position:absolute;inset:0;z-index:5;pointer-events:none;
   background:
@@ -1121,13 +1123,16 @@ function updateFPV(tele) {
   // pitch from climb vector (deg), scaled to HUD pixels
   const pitch = Math.atan2(tele.climb ?? 0, Math.max(3, vMs)) * 180 / Math.PI;
 
-  // terrain plane: rotate opposite heading so "forward" is up, plus camera roll
+  // terrain plane: rotate opposite heading so "forward" is up.
+  // Roll is shown on the HUD horizon only — rolling the terrain too made
+  // the view feel misaligned with the map.
   $("fpv-world").style.transform =
-    `translate(-50%,-50%) rotateX(56deg) rotateZ(${(-hdg - fpvRoll * 0.4).toFixed(1)}deg)`;
+    `translate(-50%,-50%) rotateX(58deg) rotateZ(${(-hdg).toFixed(1)}deg)`;
 
-  // look-ahead point and altitude-driven zoom
+  // center the terrain just ahead of the UAV so the crosshair region
+  // matches what the map shows in front of the aircraft
   if (fpvMap) {
-    const ahead = destPoint(tele.lat, tele.lon, 80 + (tele.alt || 0) * 1.5, hdg);
+    const ahead = destPoint(tele.lat, tele.lon, 40 + (tele.alt || 0) * 0.8, hdg);
     const zoom = Math.round(Math.max(15, Math.min(18,
       18.4 - Math.log2(Math.max(8, tele.alt || 10) / 8))));
     fpvMap.setView(ahead, zoom, { animate: false });
