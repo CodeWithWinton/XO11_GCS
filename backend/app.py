@@ -82,6 +82,10 @@ class MissionLog:
         with self._lock:
             return list(self._entries)
 
+    def clear(self):
+        with self._lock:
+            self._entries.clear()
+
     def as_txt(self):
         return "\n".join(f"[{e['ts']}] [{e['severity'].upper():8s}] "
                          f"[{e['type']:9s}] {e['message']}"
@@ -428,6 +432,7 @@ def api_command(cmd):
             with alerts._lock:
                 alerts.active.clear()
                 alerts._pending.clear()
+            log.clear()
     elif cmd in ("auto", "manual", "hold", "rth", "land"):
         ok, msg = sim.set_mode(cmd)
     else:

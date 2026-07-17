@@ -764,6 +764,8 @@ $("btn-reset").onclick   = async () => {
 };
 function resetLocalViews() {
   // wipe client-side history so the fresh flight starts on clean instruments
+  clientLog.splice(0);
+  $("log-list").innerHTML = "";
   trail.setLatLngs([]);
   S.pendingWps = []; redrawMission();
   [chAlt, chBatt].forEach(ch => {
