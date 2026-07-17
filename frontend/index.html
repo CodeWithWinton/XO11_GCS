@@ -363,20 +363,22 @@ function mkChart(ctx, datasets, y2) {
     data: { labels: [], datasets },
     options: {
       responsive: true, maintainAspectRatio: false, animation: false,
+      layout: { padding: { bottom: 4, top: 4 } },
+      clip: false,
       interaction: { intersect: false },
       plugins: { legend: { display: datasets.length > 1,
         labels: { boxWidth: 8, boxHeight: 8 } } },
       scales: {
         // keep tick labels hidden but draw the baseline so charts don't float
         x: { display: true, ticks: { display: false }, grid: { display: false },
-             border: { display: true, color: "#273245" } },
+             border: { display: true, color: "#273245", width: 2, z: -1 } },
         y: { grid: { color: "#131a26" }, border: { display: false },
              beginAtZero: true, grace: "8%" },
         ...(y2 ? { y2: { position: "right", grid: { display: false },
                          border: { display: false },
                          beginAtZero: true, grace: "8%" } } : {})
       },
-      elements: { point: { radius: 0 }, line: { borderWidth: 1.6, tension: 0.35 } }
+      elements: { point: { radius: 0 }, line: { borderWidth: 2, tension: 0.35 } }
     }
   });
 }
