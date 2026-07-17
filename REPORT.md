@@ -27,7 +27,11 @@ The simulator behind the default source is a calibrated quadcopter model rather 
 
 ### 1.3 The Demo Mode fallback
 
-A dashboard that requires a running Python backend cannot be hosted on a static platform like Vercel — yet a live demo link was a submission requirement. Rather than maintain two frontends, the client detects backend absence at startup: if the `EventSource` errors before its first message ever arrives, the UI seamlessly boots an in-browser replica of the physics simulator and drives the entire interface from it. Every module — map, telemetry, alerts, mission log, failsafes — remains fully interactive, with the source badge honestly reporting "BROWSER DEMO." The same detection logic doubles as resilience: if a *previously connected* backend drops, the client instead enters exponential-backoff reconnection, because falling back to fake data on a live operation would be dangerous rather than helpful.
+A dashboard that requires a running Python backend cannot be hosted on a static platform like Vercel or Netlify — yet a live demo link was a submission requirement. Rather than maintain two frontends, the client detects backend absence at startup: if the `EventSource` errors before its first message ever arrives, the UI seamlessly boots an in-browser replica of the physics simulator and drives the entire interface from it. Every module — map, telemetry, alerts, mission log, failsafes — remains fully interactive, with the source badge honestly reporting "BROWSER DEMO." The same detection logic doubles as resilience: if a *previously connected* backend drops, the client instead enters exponential-backoff reconnection, because falling back to fake data on a live operation would be dangerous rather than helpful.
+
+### 1.4 Synthetic FPV HUD without API Keys
+
+A key visual requirement was a first-person cockpit view, but standard solutions (like Google Street View) require billing-enabled API keys, breaking the "zero-configuration" deployment goal. Instead, the project implements a Synthetic FPV HUD using CSS 3D transforms on the existing Leaflet map tiles. The HUD computes a dynamic look-ahead point and applies a perspective projection to create a 3D terrain plane. During turns, real coordinated-turn physics are applied: the artificial horizon banks at an angle computed from `tan(roll) = v·ω/g`, creating an authentic OSD (On-Screen Display) experience that requires zero API keys and works flawlessly in the browser demo mode.
 
 ---
 
