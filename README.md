@@ -16,6 +16,11 @@ XO11 UAV Systems' Ground Control Station software: a real-time dashboard for mon
 
 **Module 5 — MAVLink Integration.** A `pymavlink` listener ingests real MAVLink over UDP (HEARTBEAT, GLOBAL_POSITION_INT, VFR_HUD, SYS_STATUS, GPS_RAW_INT, RADIO_STATUS) and feeds the same dashboard. A bundled sender streams simulated MAVLink so the full protocol path can be demonstrated without hardware — and the listener works unchanged with ArduPilot/PX4 SITL or a real telemetry radio.
 
+**Beyond the brief.**
+- **Airframe fleet** — switch between three calibrated aircraft (XO11 Scout 4S / Ranger 6S / Heavy 12S) with distinct packs, power draw, speed envelopes, and altitude ceilings; all validation and physics follow the selected airframe. Switching is ground-only and grants a fresh pack.
+- **FPV view** — a picture-in-picture simulated OSD feed: satellite terrain on a perspective-tilted plane that rotates with heading, under a HUD with a banking artificial horizon (coordinated-turn physics), pitch ladder, compass tape, and speed/altitude boxes. No API keys — terrain uses the same free Esri imagery as the map's satellite layer.
+- **Reset** — one click restores a full pack, returns the UAV home, and clears mission + instruments (refused mid-flight, like every unsafe command).
+
 ## Quick start
 
 ```bash

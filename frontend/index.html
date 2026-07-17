@@ -59,14 +59,6 @@ header{grid-area:header;display:flex;align-items:center;gap:14px;flex-wrap:wrap;
   border-radius:3px;padding:6px 14px;cursor:pointer;font-size:12px;font-weight:700;
   font-family:var(--font);letter-spacing:1.5px;text-transform:uppercase;
   transition:all .15s}
-header .hbtn {
-  height: 28px;
-  min-width: 90px;
-  padding: 0 10px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-}
 .hbtn:hover{border-color:var(--accent);color:var(--accent);box-shadow:var(--glow)}
 .hbtn.danger:hover{border-color:var(--red);color:var(--red);
   box-shadow:0 0 10px rgba(255,92,92,.35)}
@@ -165,6 +157,29 @@ header .hbtn {
 ::-webkit-scrollbar-thumb{background:#243244;border-radius:4px}
 ::-webkit-scrollbar-track{background:transparent}
 
+/* ---------- FPV (simulated OSD feed) ---------- */
+#fpv{position:absolute;bottom:26px;right:12px;width:360px;height:220px;z-index:1050;
+  border:1px solid var(--line2);border-radius:4px;overflow:hidden;background:#04070b;
+  box-shadow:0 10px 34px rgba(0,0,0,.65);perspective:430px}
+#fpv.hidden{display:none}
+#fpv-world{position:absolute;left:50%;top:62%;width:260%;height:260%;
+  transform:translate(-50%,-50%) rotateX(56deg) rotateZ(0deg);
+  transition:transform .28s linear;will-change:transform}
+#fpv-map{width:100%;height:100%;background:#04070b;pointer-events:none}
+#fpv-sky{position:absolute;left:0;right:0;top:0;height:36%;z-index:2;pointer-events:none;
+  background:linear-gradient(#070d16 0%,#12233a 62%,rgba(18,35,58,0) 100%)}
+#fpv-hud{position:absolute;inset:0;z-index:4;pointer-events:none;width:100%;height:100%}
+#fpv::after{content:"";position:absolute;inset:0;z-index:5;pointer-events:none;
+  background:
+    radial-gradient(ellipse at center,transparent 58%,rgba(0,0,0,.42) 100%),
+    repeating-linear-gradient(0deg,rgba(0,0,0,.10) 0 1px,transparent 1px 3px)}
+#fpv-label{position:absolute;left:8px;bottom:6px;z-index:6;font-family:var(--mono);
+  font-size:9px;letter-spacing:2px;color:rgba(124,227,139,.75)}
+#fpv-rec{position:absolute;right:10px;top:7px;z-index:6;font-family:var(--mono);
+  font-size:9px;letter-spacing:1.5px;color:var(--red)}
+#fpv-rec::before{content:"●";margin-right:5px;animation:blink 1.4s infinite}
+@media (max-width:980px){#fpv{width:250px;height:160px}}
+
 /* ---------- toast ---------- */
 #toast{position:fixed;bottom:230px;left:50%;transform:translateX(-50%);
   background:#182230;border:1px solid var(--accent);color:var(--text);
@@ -214,6 +229,50 @@ header .hbtn {
       <button class="hbtn" id="btn-wp-clear">✕ Clear Mission</button>
       <button class="hbtn" id="btn-center">◎ Center on UAV</button>
       <button class="hbtn" id="btn-trail">〰 Clear Trail</button>
+      <button class="hbtn" id="btn-fpv">⌖ FPV View</button>
+    </div>
+    <div id="fpv" class="hidden">
+      <div id="fpv-world"><div id="fpv-map"></div></div>
+      <div id="fpv-sky"></div>
+      <svg id="fpv-hud" viewBox="0 0 360 220" preserveAspectRatio="none">
+        <!-- artificial horizon: banks with roll, shifts with pitch -->
+        <g id="fpv-horizon">
+          <line x1="-260" y1="110" x2="140" y2="110" stroke="#7ce38b" stroke-width="1.6"/>
+          <line x1="220" y1="110" x2="620" y2="110" stroke="#7ce38b" stroke-width="1.6"/>
+          <!-- pitch ladder -->
+          <line x1="120" y1="82"  x2="150" y2="82"  stroke="#7ce38b" stroke-width="1"/>
+          <line x1="210" y1="82"  x2="240" y2="82"  stroke="#7ce38b" stroke-width="1"/>
+          <text x="112" y="85"  fill="#7ce38b" font-size="8" text-anchor="end" font-family="monospace">10</text>
+          <line x1="120" y1="138" x2="150" y2="138" stroke="#7ce38b" stroke-width="1" stroke-dasharray="5 4"/>
+          <line x1="210" y1="138" x2="240" y2="138" stroke="#7ce38b" stroke-width="1" stroke-dasharray="5 4"/>
+          <text x="112" y="141" fill="#7ce38b" font-size="8" text-anchor="end" font-family="monospace">-10</text>
+        </g>
+        <!-- flight-path crosshair (fixed) -->
+        <g stroke="#eafff0" stroke-width="1.6" fill="none">
+          <circle cx="180" cy="110" r="5"/>
+          <line x1="163" y1="110" x2="175" y2="110"/>
+          <line x1="185" y1="110" x2="197" y2="110"/>
+          <line x1="180" y1="99" x2="180" y2="105"/>
+        </g>
+        <!-- compass tape (ticks generated in JS) -->
+        <clipPath id="fpv-tape-clip"><rect x="80" y="0" width="200" height="26"/></clipPath>
+        <g clip-path="url(#fpv-tape-clip)"><g id="fpv-tape"></g></g>
+        <path d="M 180 22 l -5 -7 h 10 z" fill="#ffb454"/>
+        <!-- speed / altitude boxes -->
+        <g font-family="monospace">
+          <rect x="10" y="92" width="54" height="34" fill="rgba(4,7,11,.55)" stroke="#7ce38b" stroke-width="1"/>
+          <text id="fpv-speed" x="37" y="112" fill="#eafff0" font-size="15" text-anchor="middle" font-weight="bold">0</text>
+          <text x="37" y="123" fill="#7ce38b" font-size="7" text-anchor="middle">GS KM/H</text>
+          <rect x="296" y="92" width="54" height="34" fill="rgba(4,7,11,.55)" stroke="#7ce38b" stroke-width="1"/>
+          <text id="fpv-alt" x="323" y="112" fill="#eafff0" font-size="15" text-anchor="middle" font-weight="bold">0</text>
+          <text x="323" y="123" fill="#7ce38b" font-size="7" text-anchor="middle">ALT M</text>
+          <text id="fpv-mode" x="180" y="206" fill="#7ce38b" font-size="10" text-anchor="middle" letter-spacing="2">IDLE</text>
+          <text id="fpv-batt" x="323" y="206" fill="#7ce38b" font-size="9" text-anchor="middle">--%</text>
+          <text id="fpv-hdgv" x="180" y="36" fill="#eafff0" font-size="10" text-anchor="middle" font-weight="bold">000°</text>
+        </g>
+      </svg>
+      <div id="fpv-rec">REC</div>
+      <div id="fpv-label">XO11 FPV · SIMULATED OSD · SAT TERRAIN</div>
     </div>
   </div>
 
@@ -523,6 +582,7 @@ function render(tele) {
 
   pushChart(chAlt, tele.alt ?? 0);
   pushChart(chBatt, bp, tele.groundspeed ?? 0);
+  updateFPV(tele);
 }
 
 /* ---------------- alerts ---------------- */
@@ -685,6 +745,8 @@ async function loadStatus() {
     const r = await fetch("/api/status");
     const j = await r.json();
     $("src-badge").textContent = "SOURCE: " + (j.source || "sim").toUpperCase();
+    // a real MAVLink vehicle reports its own hardware — no airframe picker
+    if (j.source === "mavlink") $("airframe-sel").style.display = "none";
   } catch (e) { /* ignore */ }
 }
 
@@ -768,8 +830,7 @@ function demoCommand(path, body) {
     const want = path.split("/").pop();
     const r = demo.setProfile(want);
     toast(r.message);
-    if (r.ok) resetLocalViews();
-    return r;
+    return r;   // caller resets local views on success
   }
   if (path.includes("/api/waypoints")) {
     if (body === null) { demo.wps = []; demo.wpi = 0; toast("Mission cleared");
@@ -991,6 +1052,99 @@ class DemoAlerts {
     });
     return changes;
   }
+}
+
+/* ---------------- FPV: simulated first-person OSD feed ----------------
+   Satellite terrain on a perspective-tilted plane rotating with heading,
+   under a HUD with banking horizon, compass tape, and speed/alt boxes.
+   No API keys: terrain comes from the same free Esri imagery as the map. */
+let fpvMap = null, fpvOn = false;
+let fpvLastHdg = null, fpvLastT = null, fpvRoll = 0;
+
+function destPoint(lat, lon, distM, brgDeg) {
+  const R = 6371000, br = brgDeg * Math.PI / 180;
+  return [lat + distM * Math.cos(br) / R * 180 / Math.PI,
+          lon + distM * Math.sin(br) / (R * Math.cos(lat * Math.PI / 180)) * 180 / Math.PI];
+}
+
+function buildFpvTape() {
+  // ticks every 10 deg from -180 to 540 so the tape wraps seamlessly
+  const g = $("fpv-tape");
+  const frag = [];
+  for (let d = -180; d <= 540; d += 10) {
+    const x = d * 2.2;
+    const major = d % 30 === 0;
+    frag.push(`<line x1="${x}" y1="10" x2="${x}" y2="${major ? 20 : 16}" stroke="#7ce38b" stroke-width="1"/>`);
+    if (major) {
+      const dd = ((d % 360) + 360) % 360;
+      const lbl = { 0: "N", 90: "E", 180: "S", 270: "W" }[dd] ?? String(dd);
+      frag.push(`<text x="${x}" y="8" fill="#7ce38b" font-size="8" text-anchor="middle" font-family="monospace">${lbl}</text>`);
+    }
+  }
+  g.innerHTML = frag.join("");
+}
+
+$("btn-fpv").onclick = () => {
+  fpvOn = !fpvOn;
+  $("fpv").classList.toggle("hidden", !fpvOn);
+  $("btn-fpv").classList.toggle("active", fpvOn);
+  if (fpvOn && !fpvMap) {
+    buildFpvTape();
+    fpvMap = L.map("fpv-map", { zoomControl: false, attributionControl: false,
+      dragging: false, scrollWheelZoom: false, doubleClickZoom: false, boxZoom: false,
+      keyboard: false, touchZoom: false, fadeAnimation: false, zoomAnimation: false,
+      markerZoomAnimation: false });
+    L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+      { maxZoom: 19 }).addTo(fpvMap);
+    fpvMap.setView([12.9716, 77.5946], 17);
+  }
+  if (fpvOn && fpvMap) setTimeout(() => fpvMap.invalidateSize(), 80);
+};
+
+function updateFPV(tele) {
+  if (!fpvOn || tele.lat == null) return;
+  const now = performance.now();
+  const hdg = tele.heading || 0;
+  const vMs = (tele.groundspeed ?? 0) / 3.6;
+
+  // bank angle from coordinated-turn physics: tan(roll) = v * omega / g
+  let roll = 0;
+  if (fpvLastHdg != null) {
+    const dh = ((hdg - fpvLastHdg + 540) % 360) - 180;
+    const dt = Math.max(0.05, (now - fpvLastT) / 1000);
+    roll = Math.atan2(vMs * (dh / dt * Math.PI / 180), 9.81) * 180 / Math.PI;
+    roll = Math.max(-35, Math.min(35, roll));
+  }
+  fpvRoll += (roll - fpvRoll) * 0.3;   // smooth like a real gimbal
+  fpvLastHdg = hdg; fpvLastT = now;
+
+  // pitch from climb vector (deg), scaled to HUD pixels
+  const pitch = Math.atan2(tele.climb ?? 0, Math.max(3, vMs)) * 180 / Math.PI;
+
+  // terrain plane: rotate opposite heading so "forward" is up, plus camera roll
+  $("fpv-world").style.transform =
+    `translate(-50%,-50%) rotateX(56deg) rotateZ(${(-hdg - fpvRoll * 0.4).toFixed(1)}deg)`;
+
+  // look-ahead point and altitude-driven zoom
+  if (fpvMap) {
+    const ahead = destPoint(tele.lat, tele.lon, 80 + (tele.alt || 0) * 1.5, hdg);
+    const zoom = Math.round(Math.max(15, Math.min(18,
+      18.4 - Math.log2(Math.max(8, tele.alt || 10) / 8))));
+    fpvMap.setView(ahead, zoom, { animate: false });
+  }
+
+  // HUD
+  $("fpv-horizon").setAttribute("transform",
+    `rotate(${(-fpvRoll).toFixed(1)} 180 110) translate(0 ${(pitch * 2.4).toFixed(1)})`);
+  $("fpv-tape").setAttribute("transform", `translate(${(180 - hdg * 2.2).toFixed(1)} 0)`);
+  $("fpv-hdgv").textContent = String(Math.round(hdg)).padStart(3, "0") + "°";
+  $("fpv-speed").textContent = (tele.groundspeed ?? 0).toFixed(0);
+  $("fpv-alt").textContent = (tele.alt ?? 0).toFixed(0);
+  $("fpv-mode").textContent = tele.mode || "—";
+  const fb = $("fpv-batt");
+  fb.textContent = tele.battery_pct != null ? tele.battery_pct.toFixed(0) + "%" : "--%";
+  fb.setAttribute("fill", tele.battery_pct != null && tele.battery_pct < 15 ? "#ff5c5c"
+    : tele.battery_pct != null && tele.battery_pct < 25 ? "#ffb454" : "#7ce38b");
 }
 
 /* ---------------- boot ---------------- */
