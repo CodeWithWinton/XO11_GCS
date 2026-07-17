@@ -62,6 +62,11 @@ header{grid-area:header;display:flex;align-items:center;gap:14px;flex-wrap:wrap;
 .hbtn:hover{border-color:var(--accent);color:var(--accent);box-shadow:var(--glow)}
 .hbtn.danger:hover{border-color:var(--red);color:var(--red);
   box-shadow:0 0 10px rgba(255,92,92,.35)}
+#airframe-sel{background:var(--panel2);color:var(--accent);border:1px solid var(--line2);
+  border-radius:3px;padding:5px 8px;font-family:var(--font);font-weight:700;
+  font-size:11px;letter-spacing:1px;cursor:pointer}
+#airframe-sel:hover{border-color:var(--accent)}
+#airframe-sel:disabled{color:var(--dim);cursor:not-allowed}
 @keyframes blink{50%{opacity:.35}}
 
 /* ---------- map ---------- */
@@ -178,6 +183,11 @@ header{grid-area:header;display:flex;align-items:center;gap:14px;flex-wrap:wrap;
       <span data-m="IDLE">IDLE</span><span data-m="TAKEOFF">TKOF</span><span data-m="AUTO">AUTO</span><span data-m="MANUAL">MAN</span><span data-m="HOLD">HOLD</span><span data-m="RTH" class="warnmode">RTH</span><span data-m="LAND" class="warnmode">LAND</span>
     </div>
     <div class="badge" id="src-badge">SOURCE: —</div>
+    <select id="airframe-sel" title="Airframe (switch only while landed)">
+      <option value="scout">SCOUT · 4S</option>
+      <option value="ranger" selected>RANGER · 6S</option>
+      <option value="heavy">HEAVY · 12S</option>
+    </select>
     <button class="hbtn" id="btn-takeoff">▲ TAKEOFF</button>
     <button class="hbtn" id="btn-auto">AUTO</button>
     <button class="hbtn" id="btn-hold">HOLD</button>
@@ -320,8 +330,9 @@ function drawGeofence(tele) {
   if (!tele.home || tele.geofence_m == null) return;
   const center = [tele.home.lat, tele.home.lon];
   if (!fenceCircle) {
-    fenceCircle = L.circle(center, { radius: tele.geofence_m, color: "#f87171",
-      weight: 1.2, dashArray: "4 8", fill: false, opacity: 0.6 })
+    fenceCircle = L.circle(center, { radius: tele.geofence_m, color: "#ff5c5c",
+      weight: 2.5, dashArray: "10 6", fill: true, fillColor: "#ff5c5c",
+      fillOpacity: 0.03, opacity: 0.95 })
       .addTo(map).bindTooltip(`Geofence — ${tele.geofence_m} m`);
   } else {
     fenceCircle.setLatLng(center);
@@ -430,6 +441,10 @@ function render(tele) {
   document.querySelectorAll("#mode-strip span").forEach(s =>
     s.classList.toggle("on", s.dataset.m === tele.mode));
   $("clock").textContent = new Date().toLocaleTimeString();
+  // airframe selector follows telemetry; disabled while flying
+  const sel = $("airframe-sel");
+  if (tele.profile && document.activeElement !== sel) sel.value = tele.profile;
+  sel.disabled = !!(tele.armed && tele.alt > 0.5);
 
   // map
   const pos = [tele.lat, tele.lon];
@@ -708,6 +723,15 @@ $("btn-wp-clear").onclick = async () => {
 };
 $("btn-export-txt").onclick = () => exportLog("txt");
 $("btn-export-csv").onclick = () => exportLog("csv");
+$("airframe-sel").onchange = async e => {
+  const want = e.target.value;
+  const j = await apiPost(`/api/profiles/${want}`, {});
+  if (j.ok) {
+    resetLocalViews();          // new pack, new aircraft: fresh instruments
+  } else if (S.lastTele && S.lastTele.profile) {
+    e.target.value = S.lastTele.profile;   // revert UI on refusal (mid-flight)
+  }
+};
 
 /* ---------------- DEMO MODE (client-side sim fallback) ----------------
    Mirrors the backend physics closely enough for a static deploy demo.  */
@@ -732,6 +756,13 @@ function logEntry(type, message, severity) {
   return { ts: new Date().toISOString(), type, severity: severity || "info", message };
 }
 function demoCommand(path, body) {
+  if (path.startsWith("/api/profiles/")) {
+    const want = path.split("/").pop();
+    const r = demo.setProfile(want);
+    toast(r.message);
+    if (r.ok) resetLocalViews();
+    return r;
+  }
   if (path.includes("/api/waypoints")) {
     if (body === null) { demo.wps = []; demo.wpi = 0; toast("Mission cleared");
       addLogLines([logEntry("MISSION", "Mission cleared")]); return { ok: true }; }
@@ -748,6 +779,16 @@ function demoCommand(path, body) {
 
 class DemoSim {
   constructor() {
+    this.profiles = {
+      scout:  { label: "XO11 Scout",  packWh: 90,   hoverW: 110, cruiseW: 150, climbW: 210,
+                cells: 4,  cruise: 38, maxAlt: 120, climb: 3.5, descend: 2.2 },
+      ranger: { label: "XO11 Ranger", packWh: 480,  hoverW: 320, cruiseW: 410, climbW: 560,
+                cells: 6,  cruise: 45, maxAlt: 400, climb: 2.5, descend: 1.8 },
+      heavy:  { label: "XO11 Heavy",  packWh: 1450, hoverW: 950, cruiseW: 1150, climbW: 1600,
+                cells: 12, cruise: 32, maxAlt: 500, climb: 1.8, descend: 1.2 },
+    };
+    this.profile = "ranger";
+    this.p = this.profiles.ranger;
     this.homeLat = 12.9716; this.homeLon = 77.5946;
     this.lat = this.homeLat; this.lon = this.homeLon;
     this.alt = 0; this.hdg = 0; this.air = 0; this.gnd = 0; this.climb = 0;
@@ -758,6 +799,17 @@ class DemoSim {
     this.events = []; this.last = performance.now();
   }
   ev(type, message, severity) { this.events.push(logEntry(type, message, severity)); }
+  setProfile(name) {
+    if (!this.profiles[name]) return { ok: false, message: `Unknown airframe '${name}'` };
+    if (this.armed && this.alt > 0.5)
+      return { ok: false, message: "Cannot change airframe mid-flight — LAND first" };
+    this.profile = name; this.p = this.profiles[name];
+    this.soc = 1.0; this.wps = []; this.wpi = 0;
+    this.mode = "IDLE"; this.armed = false; this.alt = 0;
+    this.ev("SYSTEM", `Airframe switched to ${this.p.label} — ${this.p.cells}S pack, ` +
+      `ceiling ${this.p.maxAlt} m, cruise ${this.p.cruise} km/h`);
+    return { ok: true, message: `Airframe: ${this.p.label}` };
+  }
   setMode(m) { if (m !== this.mode) { this.ev("MODE", `Flight mode changed: ${this.mode} -> ${m}`); this.mode = m; } }
   command(cmd) {
     cmd = cmd.toUpperCase();
@@ -814,22 +866,22 @@ class DemoSim {
         const w = this.wps[this.wpi];
         const d = this.distM(this.lat, this.lon, w.lat, w.lon);
         tgtHdg = this.brg(this.lat, this.lon, w.lat, w.lon);
-        tgtAlt = w.alt || 60;
-        tgtSpd = Math.min(45, Math.max(12, d / 4 * 3.6));
+        tgtAlt = Math.min(w.alt || 60, this.p.maxAlt);
+        tgtSpd = Math.min(this.p.cruise, Math.max(12, d / 4 * 3.6));
         if (d < 12) { this.ev("WAYPOINT", `Waypoint ${this.wpi + 1}/${this.wps.length} reached`, "success"); this.wpi++; }
       }
     } else if (this.mode === "RTH") {
       const d = this.distM(this.lat, this.lon, this.homeLat, this.homeLon);
       if (d < 12) { this.ev("NAV", "Arrived over home — landing"); this.setMode("LAND"); }
       else { tgtHdg = this.brg(this.lat, this.lon, this.homeLat, this.homeLon);
-        tgtAlt = Math.max(this.alt, 40); tgtSpd = Math.min(45, Math.max(12, d / 4 * 3.6)); }
+        tgtAlt = Math.max(this.alt, 40); tgtSpd = Math.min(this.p.cruise, Math.max(12, d / 4 * 3.6)); }
     } else if (this.mode === "LAND") {
       tgtAlt = 0;
       if (this.alt <= 0.3) { this.alt = 0; this.armed = false;
         this.ev("DISARM", "Touchdown — UAV disarmed"); this.setMode("IDLE"); }
     } else if (this.mode === "MANUAL") {
-      tgtSpd = 27; tgtHdg = (this.hdg + (Math.random() - 0.5) * 12 * dt * 4) % 360;
-      tgtAlt = Math.max(15, Math.min(120, this.alt + (Math.random() - 0.5)));
+      tgtSpd = this.p.cruise * 0.6; tgtHdg = (this.hdg + (Math.random() - 0.5) * 12 * dt * 4) % 360;
+      tgtAlt = Math.max(15, Math.min(this.p.maxAlt, this.alt + (Math.random() - 0.5)));
     } else if (this.mode === "HOLD") { tgtAlt = Math.max(this.alt, 20); }
 
     // heading turn-rate limit
@@ -841,7 +893,7 @@ class DemoSim {
     const wind = (this.windS) * -Math.cos((this.windD - this.hdg) * Math.PI / 180);
     // position-hold cancels wind drift (a quad doesn't blow away in HOLD/LAND)
     this.gnd = (tgtSpd < 0.5 && this.air < 2) ? 0 : Math.max(0, this.air + wind);
-    const aerr = tgtAlt - this.alt, rate = aerr > 0 ? 2.5 : -1.8;
+    const aerr = tgtAlt - this.alt, rate = aerr > 0 ? this.p.climb : -this.p.descend;
     if (Math.abs(aerr) < Math.abs(rate) * dt) { this.climb = 0; this.alt = tgtAlt; }
     else { this.climb = rate; this.alt += rate * dt; }
     if (this.gnd > 0.1 && this.alt > 0.2) {
@@ -849,11 +901,12 @@ class DemoSim {
       this.lat += (d * Math.cos(br)) / 6371000 * 180 / Math.PI;
       this.lon += (d * Math.sin(br)) / (6371000 * Math.cos(this.lat * Math.PI / 180)) * 180 / Math.PI;
     }
-    // battery (accelerated for demo: drains ~1%/6s while flying)
-    let pw = !this.armed ? 4 : this.climb > 0.5 ? 560 : this.air > 5 ? 410 : this.alt > 0.5 ? 320 : 4;
-    this.soc = Math.max(0, this.soc - pw * dt / 3600 / 60);   // 60 Wh pack => visible drain
+    // battery: profile pack, drain accelerated 8x so demo shows the story arc
+    let pw = !this.armed ? 4 : this.climb > 0.5 ? this.p.climbW :
+      this.air > 5 ? this.p.cruiseW : this.alt > 0.5 ? this.p.hoverW : 4;
+    this.soc = Math.max(0, this.soc - pw * dt / 3600 / this.p.packWh * 8);
     const cellV = 3.3 + 0.9 * Math.pow(this.soc, 0.7);
-    const volts = cellV * 6 - (pw / 22 / 6) * 0.072;
+    const volts = cellV * this.p.cells - (pw / (3.7 * this.p.cells)) * 0.012 * this.p.cells;
     // sats / signal
     if (Math.random() < 0.05) this.sats = Math.max(4, Math.min(18, this.sats + Math.round((Math.random() - 0.45) * 3)));
     const dh = this.distM(this.lat, this.lon, this.homeLat, this.homeLon);
@@ -877,13 +930,15 @@ class DemoSim {
       battery_voltage: +volts.toFixed(2), battery_pct: +(this.soc * 100).toFixed(1),
       current_a: +cur.toFixed(1),
       flight_time_remaining_s: this.armed && cur > 1 ?
-        Math.max(0, Math.floor((this.soc - 0.10) * 60 / (cur * volts) * 3600)) : null,
+        Math.max(0, Math.floor((this.soc - 0.10) * this.p.packWh / 8 / (cur * volts) * 3600)) : null,
       sats: this.sats, hdop: +(12 / Math.max(4, this.sats)).toFixed(2),
       signal_pct: +this.sig.toFixed(1), rssi_dbm: +rssi.toFixed(1),
       home: { lat: this.homeLat, lon: this.homeLon },
       wind_kmh: +this.windS.toFixed(1), wind_dir: Math.round(this.windD),
       wp_index: this.wpi, wp_total: this.wps.length, dist_home_m: +dh.toFixed(1),
       geofence_m: 1500,
+      profile: this.profile, profile_label: this.p.label,
+      max_alt: this.p.maxAlt, cells: this.p.cells,
       link_ok: true
     };
   }

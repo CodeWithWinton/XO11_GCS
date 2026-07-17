@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 
 from flask import Flask, Response, jsonify, request, send_from_directory
 
-from simulator import UAVSimulator, haversine_m
+from simulator import PROFILES, UAVSimulator, haversine_m
 
 FRONTEND_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "..", "frontend")
@@ -391,10 +391,10 @@ def api_waypoints():
         if not (-90 <= lat <= 90 and -180 <= lon <= 180):
             return jsonify({"ok": False,
                             "error": f"waypoint {i} out of range: {lat},{lon}"}), 400
-        if not (5 <= alt <= 400):
+        if not (5 <= alt <= sim.p_max_alt):
             return jsonify({"ok": False,
-                            "error": f"waypoint {i} altitude {alt} m outside safe "
-                                     f"envelope (5-400 m)"}), 400
+                            "error": f"waypoint {i} altitude {alt} m outside "
+                                     f"{sim.p_label} envelope (5-{sim.p_max_alt:.0f} m)"}), 400
         d_home = haversine_m(sim.home_lat, sim.home_lon, lat, lon)
         if d_home > GEOFENCE_M:
             return jsonify({"ok": False,
@@ -433,6 +433,28 @@ def api_command(cmd):
     else:
         return jsonify({"ok": False, "error": f"unknown command '{cmd}'"}), 400
     return (jsonify({"ok": ok, "message": msg})
+            if ok else (jsonify({"ok": False, "error": msg}), 409))
+
+
+@app.route("/api/profiles")
+def api_profiles():
+    return jsonify({
+        "current": sim.profile,
+        "profiles": [{"id": k, "label": p["label"], "desc": p["desc"],
+                      "cells": p["cell_count"], "pack_wh": p["pack_wh"],
+                      "cruise_kmh": p["cruise_kmh"], "max_alt": p["max_alt"]}
+                     for k, p in PROFILES.items()],
+    })
+
+
+@app.route("/api/profiles/<name>", methods=["POST"])
+def api_set_profile(name):
+    if SOURCE == "mavlink":
+        return jsonify({"ok": False,
+                        "error": "Airframe selection is sim-only — a real vehicle "
+                                 "reports its own hardware"}), 400
+    ok, msg = sim.set_profile(name)
+    return (jsonify({"ok": True, "message": msg})
             if ok else (jsonify({"ok": False, "error": msg}), 409))
 
 

@@ -37,6 +37,67 @@ CRUISE_POWER_W = 410.0      # cruise draw at CRUISE_SPEED
 CLIMB_POWER_W = 560.0       # full climb draw
 INTERNAL_R = 0.012 * CELL_COUNT  # pack internal resistance (ohms) -> sag
 
+# ---------------------------------------------------------------------------
+# Airframe profiles — the XO11 product line.
+# Each profile is a self-consistent calibration: pack size, power draw,
+# speed envelope, climb performance, and altitude ceiling.
+# ---------------------------------------------------------------------------
+PROFILES = {
+    "scout": {
+        "label": "XO11 Scout",
+        "desc": "Compact 4S recon quad — nimble, short endurance",
+        "cell_count": 4,            # 4S: 16.8 V full -> 13.2 V empty
+        "pack_wh": 90.0,            # ~6 Ah * 14.8 V nominal
+        "hover_w": 110.0,
+        "cruise_w": 150.0,
+        "climb_w": 210.0,
+        "internal_r": 0.015 * 4,
+        "cruise_kmh": 38.0,
+        "max_kmh": 55.0,
+        "climb_rate": 3.5,
+        "descent_rate": 2.2,
+        "cruise_alt": 50.0,
+        "max_alt": 120.0,           # regulatory-class ceiling
+        "turn_rate": 90.0,
+    },
+    "ranger": {
+        "label": "XO11 Ranger",
+        "desc": "Standard 6S workhorse — balanced range and payload",
+        "cell_count": 6,
+        "pack_wh": 480.0,
+        "hover_w": 320.0,
+        "cruise_w": 410.0,
+        "climb_w": 560.0,
+        "internal_r": 0.012 * 6,
+        "cruise_kmh": 45.0,
+        "max_kmh": 68.0,
+        "climb_rate": 2.5,
+        "descent_rate": 1.8,
+        "cruise_alt": 60.0,
+        "max_alt": 400.0,
+        "turn_rate": 45.0,
+    },
+    "heavy": {
+        "label": "XO11 Heavy",
+        "desc": "12S heavy-lift octo — long endurance, slow and steady",
+        "cell_count": 12,
+        "pack_wh": 1450.0,
+        "hover_w": 950.0,
+        "cruise_w": 1150.0,
+        "climb_w": 1600.0,
+        "internal_r": 0.010 * 12,
+        "cruise_kmh": 32.0,
+        "max_kmh": 48.0,
+        "climb_rate": 1.8,
+        "descent_rate": 1.2,
+        "cruise_alt": 80.0,
+        "max_alt": 500.0,
+        "turn_rate": 30.0,
+    },
+}
+DEFAULT_PROFILE = "ranger"
+
+# Legacy module-level constants (Ranger) kept for backward compatibility
 CRUISE_SPEED_KMH = 45.0
 MAX_SPEED_KMH = 68.0
 CLIMB_RATE = 2.5            # m/s
@@ -96,13 +157,14 @@ class UAVSimulator:
     MODES = ("IDLE", "TAKEOFF", "AUTO", "MANUAL", "HOLD", "RTH", "LAND")
 
     def __init__(self, home_lat=12.9716, home_lon=77.5946, tick_hz=4.0,
-                 batt_accel=1.0, geofence_m=1500.0):
+                 batt_accel=1.0, geofence_m=1500.0, profile=DEFAULT_PROFILE):
         self._lock = threading.RLock()
         self.tick = 1.0 / tick_hz
         # batt_accel > 1 accelerates battery drain (demo videos);
         # physics stays otherwise identical.
         self.batt_accel = max(0.1, float(batt_accel))
         self.geofence_m = max(50.0, float(geofence_m))
+        self._apply_profile(profile)
 
         self.home_lat, self.home_lon = home_lat, home_lon
         self.lat, self.lon = home_lat, home_lon
@@ -115,7 +177,7 @@ class UAVSimulator:
         self.mode = "IDLE"
         self.armed = False
         self.soc = 1.0
-        self.batt_v = soc_to_cell_v(1.0) * CELL_COUNT
+        self.batt_v = soc_to_cell_v(1.0) * self.p_cells
         self.batt_pct = 100.0
         self.current_a = 0.0
         self.sats = 14
@@ -143,6 +205,56 @@ class UAVSimulator:
 
         self._events = []      # (event_type, message) pairs emitted since last drain
         self._t = time.time()
+
+    # ---------------- airframe profiles ----------------
+
+    def _apply_profile(self, name):
+        """Load an airframe's calibration into instance physics constants."""
+        name = str(name).lower()
+        if name not in PROFILES:
+            raise ValueError(f"unknown profile '{name}'")
+        p = PROFILES[name]
+        self.profile = name
+        self.p_label = p["label"]
+        self.p_cells = p["cell_count"]
+        self.p_pack_wh = p["pack_wh"]
+        self.p_hover_w = p["hover_w"]
+        self.p_cruise_w = p["cruise_w"]
+        self.p_climb_w = p["climb_w"]
+        self.p_int_r = p["internal_r"]
+        self.p_cruise_kmh = p["cruise_kmh"]
+        self.p_max_kmh = p["max_kmh"]
+        self.p_climb_rate = p["climb_rate"]
+        self.p_descent_rate = p["descent_rate"]
+        self.p_cruise_alt = p["cruise_alt"]
+        self.p_max_alt = p["max_alt"]
+        self.p_turn_rate = p["turn_rate"]
+
+    def set_profile(self, name):
+        """Switch airframe. Only allowed on the ground and disarmed —
+        you can't swap aircraft mid-flight. Resets battery to full
+        (it's physically a different pack)."""
+        with self._lock:
+            name = str(name).lower()
+            if name not in PROFILES:
+                return False, f"Unknown airframe '{name}'"
+            if self.armed or self.alt > 0.5:
+                return False, "Cannot change airframe mid-flight — LAND first"
+            if name == self.profile:
+                return True, f"{self.p_label} already selected"
+            self._apply_profile(name)
+            self.soc = 1.0
+            self.batt_v = soc_to_cell_v(1.0) * self.p_cells
+            self.batt_pct = 100.0
+            self.current_a = 0.0
+            self._power_ema = None
+            self.waypoints = []
+            self.wp_index = 0
+            self._event("SYSTEM",
+                        f"Airframe switched to {self.p_label} — "
+                        f"{self.p_cells}S pack, ceiling {self.p_max_alt:.0f} m, "
+                        f"cruise {self.p_cruise_kmh:.0f} km/h")
+            return True, f"Airframe: {self.p_label}"
 
     # ---------------- public control API ----------------
 
@@ -176,7 +288,7 @@ class UAVSimulator:
             try:
                 parsed = [
                     {"lat": float(w["lat"]), "lon": float(w["lon"]),
-                     "alt": float(w.get("alt", CRUISE_ALT))}
+                     "alt": float(w.get("alt", self.p_cruise_alt))}
                     for w in wps
                 ]
             except (KeyError, TypeError, ValueError):
@@ -184,6 +296,10 @@ class UAVSimulator:
             for w in parsed:
                 if not all(math.isfinite(v) for v in (w["lat"], w["lon"], w["alt"])):
                     return False, "Mission rejected — non-finite waypoint"
+                if w["alt"] > self.p_max_alt:
+                    return False, (f"Mission rejected — waypoint altitude "
+                                   f"{w['alt']:.0f} m exceeds {self.p_label} "
+                                   f"ceiling ({self.p_max_alt:.0f} m)")
             self.waypoints = parsed
             self.wp_index = 0
             self._event("MISSION", f"Mission uploaded — {len(self.waypoints)} waypoints")
@@ -195,8 +311,8 @@ class UAVSimulator:
                 total_m += haversine_m(prev[0], prev[1], w["lat"], w["lon"])
                 prev = (w["lat"], w["lon"])
             total_m += haversine_m(prev[0], prev[1], self.home_lat, self.home_lon)
-            usable_wh = max(0.0, (self.soc - 0.15) * PACK_CAPACITY_WH) / self.batt_accel
-            range_m = usable_wh / CRUISE_POWER_W * 3600.0 * (CRUISE_SPEED_KMH / 3.6)
+            usable_wh = max(0.0, (self.soc - 0.15) * self.p_pack_wh) / self.batt_accel
+            range_m = usable_wh / self.p_cruise_w * 3600.0 * (self.p_cruise_kmh / 3.6)
             if total_m > range_m:
                 self._event("WARNING",
                             f"Mission length {total_m/1000:.1f} km exceeds estimated "
@@ -225,7 +341,7 @@ class UAVSimulator:
             self.mode = "IDLE"
             self.armed = False
             self.soc = 1.0
-            self.batt_v = soc_to_cell_v(1.0) * CELL_COUNT
+            self.batt_v = soc_to_cell_v(1.0) * self.p_cells
             self.batt_pct = 100.0
             self.current_a = 0.0
             self._power_ema = None
@@ -311,10 +427,10 @@ class UAVSimulator:
             return
 
         if self.mode == "TAKEOFF":
-            target_alt = CRUISE_ALT
+            target_alt = self.p_cruise_alt
             target_speed = 0.0
-            if self.alt >= CRUISE_ALT - 0.5:
-                self._event("NAV", f"Takeoff complete — reached {CRUISE_ALT:.0f} m")
+            if self.alt >= self.p_cruise_alt - 0.5:
+                self._event("NAV", f"Takeoff complete — reached {self.p_cruise_alt:.0f} m")
                 self._set_mode("AUTO" if self.waypoints else "HOLD")
 
         elif self.mode == "HOLD":
@@ -323,10 +439,10 @@ class UAVSimulator:
 
         elif self.mode == "MANUAL":
             # gentle wandering in manual to keep demo alive
-            target_speed = CRUISE_SPEED_KMH * 0.6
+            target_speed = self.p_cruise_kmh * 0.6
             target_hdg = (self.heading + random.gauss(0, 6) * dt) % 360
             target_alt = self.alt + random.gauss(0, 0.5)
-            target_alt = max(15.0, min(120.0, target_alt))
+            target_alt = max(15.0, min(self.p_max_alt, target_alt))
 
         elif self.mode == "AUTO":
             if self.wp_index >= len(self.waypoints):
@@ -338,7 +454,7 @@ class UAVSimulator:
                 target_hdg = bearing_deg(self.lat, self.lon, wp["lat"], wp["lon"])
                 target_alt = wp["alt"]
                 # slow down on approach
-                target_speed = min(CRUISE_SPEED_KMH, max(12.0, dist / 4.0 * 3.6))
+                target_speed = min(self.p_cruise_kmh, max(12.0, dist / 4.0 * 3.6))
                 if dist < WAYPOINT_RADIUS:
                     self._event("WAYPOINT",
                                 f"Waypoint {self.wp_index + 1}/{len(self.waypoints)} reached")
@@ -352,7 +468,7 @@ class UAVSimulator:
             else:
                 target_hdg = bearing_deg(self.lat, self.lon, self.home_lat, self.home_lon)
                 target_alt = max(self.alt, 40.0)
-                target_speed = min(CRUISE_SPEED_KMH, max(12.0, dist / 4.0 * 3.6))
+                target_speed = min(self.p_cruise_kmh, max(12.0, dist / 4.0 * 3.6))
 
         elif self.mode == "LAND":
             target_speed = 0.0
@@ -366,12 +482,12 @@ class UAVSimulator:
 
         # -- heading: rate-limited turn toward target --
         err = (target_hdg - self.heading + 540) % 360 - 180
-        max_turn = TURN_RATE_DEG_S * dt
+        max_turn = self.p_turn_rate * dt
         self.heading = (self.heading + max(-max_turn, min(max_turn, err))) % 360
 
         # -- speed: first-order response --
         self.airspeed += (target_speed - self.airspeed) * min(1.0, 0.8 * dt)
-        self.airspeed = max(0.0, min(MAX_SPEED_KMH, self.airspeed))
+        self.airspeed = max(0.0, min(self.p_max_kmh, self.airspeed))
 
         # ground speed = airspeed + wind component (never negative).
         # Exception: when commanded to hold position (HOLD/LAND/TAKEOFF with
@@ -383,9 +499,10 @@ class UAVSimulator:
             self.groundspeed = max(0.0, self.airspeed
                                    + self._wind_component_along(self.heading))
 
-        # -- altitude: rate-limited climb/descent --
+        # -- altitude: rate-limited climb/descent, hard ceiling --
+        target_alt = min(target_alt, self.p_max_alt)
         alt_err = target_alt - self.alt
-        rate = CLIMB_RATE if alt_err > 0 else -DESCENT_RATE
+        rate = self.p_climb_rate if alt_err > 0 else -self.p_descent_rate
         if abs(alt_err) < abs(rate) * dt:
             self.climb = alt_err / dt if dt > 0 else 0.0
             self.alt = target_alt
@@ -403,13 +520,13 @@ class UAVSimulator:
         if not self.armed:
             power = 4.0  # avionics idle
         elif self.climb > 0.5:
-            power = CLIMB_POWER_W
+            power = self.p_climb_w
         elif self.airspeed > 5:
             # power grows with speed^2 above hover baseline
-            frac = (self.airspeed / CRUISE_SPEED_KMH) ** 2
-            power = HOVER_POWER_W + (CRUISE_POWER_W - HOVER_POWER_W) * min(1.6, frac)
+            frac = (self.airspeed / self.p_cruise_kmh) ** 2
+            power = self.p_hover_w + (self.p_cruise_w - self.p_hover_w) * min(1.6, frac)
         elif self.alt > 0.5:
-            power = HOVER_POWER_W
+            power = self.p_hover_w
         else:
             power = 4.0
         # headwind penalty
@@ -418,7 +535,7 @@ class UAVSimulator:
             power *= 1.0 + min(0.25, head / 100.0)
 
         self.soc = max(0.0, self.soc - (power * self.batt_accel * dt / 3600.0)
-                       / PACK_CAPACITY_WH)
+                       / self.p_pack_wh)
 
         # exponential moving average of power -> stable flight-time estimate
         if self._power_ema is None:
@@ -426,10 +543,10 @@ class UAVSimulator:
         else:
             self._power_ema += (power - self._power_ema) * min(1.0, dt / 10.0)
 
-        ocv = soc_to_cell_v(self.soc) * CELL_COUNT
-        nominal_v = 3.7 * CELL_COUNT
+        ocv = soc_to_cell_v(self.soc) * self.p_cells
+        nominal_v = 3.7 * self.p_cells
         self.current_a = power / max(nominal_v, ocv * 0.9)
-        sag = self.current_a * INTERNAL_R
+        sag = self.current_a * self.p_int_r
         self.batt_v = round(ocv - sag + random.gauss(0, 0.02), 2)
         self.batt_pct = round(self.soc * 100.0, 1)
 
@@ -490,7 +607,7 @@ class UAVSimulator:
         and accounts for batt_accel so demo mode stays self-consistent."""
         if self.current_a < 1.0 or not self.armed:
             return None
-        usable_wh = max(0.0, (self.soc - 0.10) * PACK_CAPACITY_WH)
+        usable_wh = max(0.0, (self.soc - 0.10) * self.p_pack_wh)
         power = (self._power_ema or self.current_a * self.batt_v) * self.batt_accel
         if power <= 0:
             return None
@@ -525,4 +642,8 @@ class UAVSimulator:
                 "wp_total": len(self.waypoints),
                 "dist_home_m": round(dist_home, 1),
                 "geofence_m": self.geofence_m,
+                "profile": self.profile,
+                "profile_label": self.p_label,
+                "max_alt": self.p_max_alt,
+                "cells": self.p_cells,
             }

@@ -286,6 +286,46 @@ check("reset clears mission", snap["wp_total"] == 0)
 check("reset -> IDLE disarmed", snap["mode"] == "IDLE" and not snap["armed"])
 check("reset logged", any("reset" in m.lower() for _, m in sr.drain_events()))
 
+# ================= airframe profiles =================
+from simulator import PROFILES
+check("3 airframes defined", set(PROFILES) == {"scout", "ranger", "heavy"})
+
+sp = UAVSimulator(profile="scout")
+check("scout is 4S", sp.snapshot()["cells"] == 4)
+check("scout full-pack voltage ~16.8V", abs(sp.batt_v - 16.8) < 0.05, f"{sp.batt_v}V")
+check("scout ceiling 120m", sp.snapshot()["max_alt"] == 120.0)
+ok, msg = sp.set_waypoints([{"lat": sp.home_lat + 0.001, "lon": sp.home_lon, "alt": 200}])
+check("waypoint above scout ceiling rejected", not ok, f"({msg})")
+
+ok, msg = sp.set_profile("heavy")
+check("profile switch on ground OK", ok, f"({msg})")
+check("heavy is 12S, fresh pack", sp.p_cells == 12 and sp.batt_pct == 100.0)
+check("switch logged", any("Airframe" in m for _, m in sp.drain_events()))
+ok, msg = sp.set_profile("bogus")
+check("unknown airframe rejected", not ok)
+
+sp2 = UAVSimulator(profile="ranger")
+sp2.arm_and_takeoff(); sp2.alt = 50
+ok, msg = sp2.set_profile("scout")
+check("profile switch refused mid-flight", not ok, f"({msg})")
+
+# scout drains faster than heavy under identical hover
+def hover_drain(profile):
+    s = UAVSimulator(tick_hz=4, profile=profile)
+    s.arm_and_takeoff(); s.mode = "HOLD"; s.alt = 30; s.armed = True
+    t_v = time.time(); orig2 = simmod.time.time
+    try:
+        for _ in range(400):   # 100 virtual seconds
+            t_v += 0.25
+            simmod.time.time = lambda: t_v
+            s.step()
+    finally:
+        simmod.time.time = orig2
+    return 100.0 - s.batt_pct
+d_scout, d_heavy = hover_drain("scout"), hover_drain("heavy")
+check("scout drains faster than heavy (Wh/size ratio)", d_scout > d_heavy,
+      f"scout -{d_scout:.2f}% vs heavy -{d_heavy:.2f}%")
+
 print()
 if FAIL:
     print(f"{len(FAIL)} FAILURES: {FAIL}"); sys.exit(1)
