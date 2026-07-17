@@ -367,9 +367,14 @@ function mkChart(ctx, datasets, y2) {
       plugins: { legend: { display: datasets.length > 1,
         labels: { boxWidth: 8, boxHeight: 8 } } },
       scales: {
-        x: { display: false },
-        y: { grid: { color: "#131a26" }, beginAtZero: true },
-        ...(y2 ? { y2: { position: "right", grid: { display: false }, beginAtZero: true } } : {})
+        // keep tick labels hidden but draw the baseline so charts don't float
+        x: { display: true, ticks: { display: false }, grid: { display: false },
+             border: { display: true, color: "#273245" } },
+        y: { grid: { color: "#131a26" }, border: { display: false },
+             beginAtZero: true, grace: "8%" },
+        ...(y2 ? { y2: { position: "right", grid: { display: false },
+                         border: { display: false },
+                         beginAtZero: true, grace: "8%" } } : {})
       },
       elements: { point: { radius: 0 }, line: { borderWidth: 1.6, tension: 0.35 } }
     }
@@ -381,6 +386,10 @@ const chAlt = mkChart($("chart-alt").getContext("2d"),
 const chBatt = mkChart($("chart-batt").getContext("2d"),
   [{ label: "Battery %", data: [], borderColor: "#7ce38b", yAxisID: "y" },
    { label: "Gnd speed", data: [], borderColor: "#ffb454", yAxisID: "y2" }], true);
+// sensible resting scales so idle (all-zero) data doesn't collapse to 0..1
+chAlt.options.scales.y.suggestedMax = 20;      // meters
+chBatt.options.scales.y.max = 100;             // battery is always 0-100 %
+chBatt.options.scales.y2.suggestedMax = 20;    // km/h
 
 function pushChart(ch, ...vals) {
   ch.data.labels.push("");
