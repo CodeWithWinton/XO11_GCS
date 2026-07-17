@@ -24,14 +24,40 @@ from datetime import datetime, timezone
 
 from flask import Flask, Response, jsonify, request, send_from_directory
 
-from simulator import UAVSimulator
+from simulator import UAVSimulator, haversine_m
 
 FRONTEND_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                             "..", "frontend")
 TICK_HZ = 4.0
 SOURCE = os.environ.get("GCS_SOURCE", "sim").lower()
 
+
+def _env_float(name, default, lo, hi):
+    """Read a float env var defensively — bad values fall back to default."""
+    try:
+        v = float(os.environ.get(name, default))
+        return min(hi, max(lo, v))
+    except (TypeError, ValueError):
+        return default
+
+
+# GCS_BATT_ACCEL: speeds up battery drain (sim only) so a short demo video
+# can show the LOW -> CRITICAL -> auto-RTH cascade. 1.0 = realistic.
+BATT_ACCEL = _env_float("GCS_BATT_ACCEL", 1.0, 0.1, 500.0)
+# GCS_GEOFENCE_M: max allowed distance from home before breach alert + RTH.
+GEOFENCE_M = _env_float("GCS_GEOFENCE_M", 1500.0, 50.0, 50000.0)
+MAX_WAYPOINTS = 100
+
 app = Flask(__name__, static_folder=None)
+
+
+@app.after_request
+def add_cors(resp):
+    # allow a separately-hosted frontend (e.g. Vercel static) to reach the API
+    resp.headers["Access-Control-Allow-Origin"] = "*"
+    resp.headers["Access-Control-Allow-Methods"] = "GET, POST, DELETE, OPTIONS"
+    resp.headers["Access-Control-Allow-Headers"] = "Content-Type"
+    return resp
 
 # ---------------------------------------------------------------------------
 # Mission log (Module 4)
@@ -72,6 +98,18 @@ class MissionLog:
 # ---------------------------------------------------------------------------
 # Alert engine (Module 3) — thresholds with hysteresis so alerts don't flap
 # ---------------------------------------------------------------------------
+def _num(tele, key, default):
+    """Numeric-safe getter: MAVLink sources may report None for unknown
+    values (e.g. battery_remaining = -1 -> None). Treat those as 'unknown',
+    never as zero — otherwise we'd raise false CRITICAL alerts."""
+    v = tele.get(key, default)
+    if v is None or not isinstance(v, (int, float)):
+        return default
+    if isinstance(v, float) and (v != v or v in (float("inf"), float("-inf"))):
+        return default
+    return v
+
+
 class AlertEngine:
     """
     Each rule: (id, severity, trigger_fn, clear_fn, message_fn)
@@ -85,23 +123,28 @@ class AlertEngine:
         self._lock = threading.Lock()
         self.rules = [
             ("BATTERY_CRITICAL", "critical",
-             lambda t: t.get("battery_pct", 100) < 15,
-             lambda t: t.get("battery_pct", 100) >= 17,
-             lambda t: f"Battery CRITICAL: {t['battery_pct']:.0f}% "
-                       f"({t.get('battery_voltage', 0):.1f} V) — land immediately"),
+             lambda t: _num(t, "battery_pct", 100) < 15,
+             lambda t: _num(t, "battery_pct", 100) >= 17,
+             lambda t: f"Battery CRITICAL: {_num(t, 'battery_pct', 0):.0f}% "
+                       f"({_num(t, 'battery_voltage', 0):.1f} V) — land immediately"),
             ("BATTERY_LOW", "warning",
-             lambda t: t.get("battery_pct", 100) < 25,
-             lambda t: t.get("battery_pct", 100) >= 27,
-             lambda t: f"Battery LOW: {t['battery_pct']:.0f}% "
-                       f"({t.get('battery_voltage', 0):.1f} V)"),
+             lambda t: _num(t, "battery_pct", 100) < 25,
+             lambda t: _num(t, "battery_pct", 100) >= 27,
+             lambda t: f"Battery LOW: {_num(t, 'battery_pct', 0):.0f}% "
+                       f"({_num(t, 'battery_voltage', 0):.1f} V)"),
             ("GPS_LOST", "warning",
-             lambda t: t.get("sats", 99) < 6,
-             lambda t: t.get("sats", 99) >= 7,
-             lambda t: f"GPS degraded: only {t['sats']} satellites locked"),
+             lambda t: _num(t, "sats", 99) < 6,
+             lambda t: _num(t, "sats", 99) >= 7,
+             lambda t: f"GPS degraded: only {_num(t, 'sats', 0):.0f} satellites locked"),
             ("SIGNAL_WEAK", "warning",
-             lambda t: t.get("signal_pct", 100) < 35,
-             lambda t: t.get("signal_pct", 100) >= 45,
-             lambda t: f"Signal WEAK: link quality {t['signal_pct']:.0f}%"),
+             lambda t: _num(t, "signal_pct", 100) < 35,
+             lambda t: _num(t, "signal_pct", 100) >= 45,
+             lambda t: f"Signal WEAK: link quality {_num(t, 'signal_pct', 0):.0f}%"),
+            ("GEOFENCE_BREACH", "critical",
+             lambda t: _num(t, "dist_home_m", 0) > _num(t, "geofence_m", float("inf")),
+             lambda t: _num(t, "dist_home_m", 0) <= 0.9 * _num(t, "geofence_m", float("inf")),
+             lambda t: f"GEOFENCE breach: {_num(t, 'dist_home_m', 0):.0f} m from home "
+                       f"(limit {_num(t, 'geofence_m', 0):.0f} m)"),
             ("LINK_LOST", "critical",
              lambda t: t.get("link_ok") is False,
              lambda t: t.get("link_ok", True) is True,
@@ -112,16 +155,18 @@ class AlertEngine:
         """Returns list of newly raised/cleared alert events."""
         changes = []
         with self._lock:
-            # BATTERY_CRITICAL suppresses BATTERY_LOW duplication
-            crit_active = "BATTERY_CRITICAL" in self.active
             for aid, sev, trig, clear, msg in self.rules:
-                if aid == "BATTERY_LOW" and (crit_active or
-                                             tele.get("battery_pct", 100) < 15):
+                # BATTERY_LOW is superseded by BATTERY_CRITICAL
+                if aid == "BATTERY_LOW" and ("BATTERY_CRITICAL" in self.active
+                                             or _num(tele, "battery_pct", 100) < 15):
+                    if aid in self.active:   # upgrade in progress: drop LOW
+                        alert = self.active.pop(aid)
+                        changes.append({"action": "cleared", **alert})
                     continue
                 if aid not in self.active:
                     try:
                         fire = trig(tele)
-                    except (TypeError, KeyError):
+                    except (TypeError, KeyError, ValueError):
                         fire = False
                     if fire:
                         alert = {"id": aid, "severity": sev,
@@ -134,13 +179,19 @@ class AlertEngine:
                 else:
                     try:
                         ok = clear(tele)
-                    except (TypeError, KeyError):
+                    except (TypeError, KeyError, ValueError):
                         ok = False
                     if ok:
                         alert = self.active.pop(aid)
                         self.log.add("ALERT", f"Cleared: {aid.replace('_', ' ')}",
                                      "info")
                         changes.append({"action": "cleared", **alert})
+                    else:
+                        # keep live values in the banner message
+                        try:
+                            self.active[aid]["message"] = msg(tele)
+                        except (TypeError, KeyError, ValueError):
+                            pass
         return changes
 
     def snapshot(self):
@@ -183,7 +234,7 @@ class TelemetryHub:
 log = MissionLog()
 alerts = AlertEngine(log)
 hub = TelemetryHub()
-sim = UAVSimulator(tick_hz=TICK_HZ)
+sim = UAVSimulator(tick_hz=TICK_HZ, batt_accel=BATT_ACCEL, geofence_m=GEOFENCE_M)
 mav_listener = None
 
 if SOURCE == "mavlink":
@@ -196,44 +247,60 @@ else:
 
 SEV_FOR = {"ARM": "info", "DISARM": "info", "MODE": "info", "NAV": "info",
            "WAYPOINT": "success", "MISSION": "info", "FAILSAFE": "critical",
-           "CONNECTION": "warning"}
+           "CONNECTION": "warning", "WARNING": "warning"}
 
 
 def producer_loop():
-    """Single loop: advance source, run alerts, publish to subscribers."""
+    """Single loop: advance source, run alerts, publish to subscribers.
+
+    Hardened: any exception in one tick is logged and the loop continues —
+    a telemetry glitch must never freeze the whole ground station."""
     period = 1.0 / TICK_HZ
     last_link = True
+    consecutive_errors = 0
     while True:
         t0 = time.time()
+        try:
+            n_log_before = len(log.all())
 
-        if SOURCE == "mavlink":
-            tele = mav_listener.snapshot()
-            events = mav_listener.drain_events()
-            if tele is None:
-                tele = {"ts": time.time(), "link_ok": False, "mode": "N/A",
-                        "armed": False}
-            if tele.get("link_ok") != last_link:
-                last_link = tele.get("link_ok")
-                log.add("CONNECTION",
-                        "Telemetry link established" if last_link
-                        else "Telemetry link lost",
-                        "info" if last_link else "warning")
-        else:
-            tele = sim.step()
-            tele["link_ok"] = True
-            events = sim.drain_events()
+            if SOURCE == "mavlink":
+                tele = mav_listener.snapshot()
+                events = mav_listener.drain_events()
+                if tele is None:
+                    tele = {"ts": time.time(), "link_ok": False, "mode": "N/A",
+                            "armed": False}
+                if tele.get("link_ok") != last_link:
+                    last_link = tele.get("link_ok")
+                    log.add("CONNECTION",
+                            "Telemetry link established" if last_link
+                            else "Telemetry link lost",
+                            "info" if last_link else "warning")
+            else:
+                tele = sim.step()
+                tele["link_ok"] = True
+                events = sim.drain_events()
 
-        for etype, msg in events:
-            log.add(etype, msg, SEV_FOR.get(etype, "info"))
+            for etype, msg in events:
+                log.add(etype, msg, SEV_FOR.get(etype, "info"))
 
-        alert_changes = alerts.evaluate(tele)
-        payload = {
-            "telemetry": tele,
-            "alerts": alerts.snapshot(),
-            "alert_changes": alert_changes,
-            "log_tail": log.all()[-1:] if events or alert_changes else [],
-        }
-        hub.publish(payload)
+            alert_changes = alerts.evaluate(tele)
+
+            # send *all* log entries added this tick (events + alerts),
+            # not just the last one
+            new_entries = log.all()[n_log_before:]
+            payload = {
+                "telemetry": tele,
+                "alerts": alerts.snapshot(),
+                "alert_changes": alert_changes,
+                "log_tail": new_entries,
+            }
+            hub.publish(payload)
+            consecutive_errors = 0
+        except Exception as exc:                          # noqa: BLE001
+            consecutive_errors += 1
+            if consecutive_errors <= 3 or consecutive_errors % 40 == 0:
+                log.add("SYSTEM", f"Telemetry loop error: {exc!r}", "critical")
+            time.sleep(0.5)
 
         time.sleep(max(0.0, period - (time.time() - t0)))
 
@@ -287,23 +354,37 @@ def api_waypoints():
     wps = data.get("waypoints", [])
     if not isinstance(wps, list) or not wps:
         return jsonify({"ok": False, "error": "waypoints must be a non-empty list"}), 400
-    for w in wps:
+    if len(wps) > MAX_WAYPOINTS:
+        return jsonify({"ok": False,
+                        "error": f"too many waypoints ({len(wps)} > {MAX_WAYPOINTS})"}), 400
+    import math as _m
+    for i, w in enumerate(wps, 1):
+        if not isinstance(w, dict):
+            return jsonify({"ok": False, "error": f"waypoint {i} is not an object"}), 400
         try:
             lat, lon = float(w["lat"]), float(w["lon"])
+            alt = float(w.get("alt", 60))
         except (KeyError, TypeError, ValueError):
-            return jsonify({"ok": False, "error": "each waypoint needs numeric lat/lon"}), 400
+            return jsonify({"ok": False,
+                            "error": f"waypoint {i} needs numeric lat/lon/alt"}), 400
+        if not all(_m.isfinite(v) for v in (lat, lon, alt)):
+            return jsonify({"ok": False,
+                            "error": f"waypoint {i} has non-finite coordinates"}), 400
         if not (-90 <= lat <= 90 and -180 <= lon <= 180):
-            return jsonify({"ok": False, "error": f"waypoint out of range: {lat},{lon}"}), 400
-        alt = w.get("alt", 60)
-        try:
-            alt = float(alt)
-        except (TypeError, ValueError):
-            return jsonify({"ok": False, "error": "alt must be numeric"}), 400
+            return jsonify({"ok": False,
+                            "error": f"waypoint {i} out of range: {lat},{lon}"}), 400
         if not (5 <= alt <= 400):
             return jsonify({"ok": False,
-                            "error": f"altitude {alt} m outside safe envelope (5-400 m)"}), 400
+                            "error": f"waypoint {i} altitude {alt} m outside safe "
+                                     f"envelope (5-400 m)"}), 400
+        d_home = haversine_m(sim.home_lat, sim.home_lon, lat, lon)
+        if d_home > GEOFENCE_M:
+            return jsonify({"ok": False,
+                            "error": f"waypoint {i} is {d_home:.0f} m from home — "
+                                     f"outside the {GEOFENCE_M:.0f} m geofence"}), 400
     ok, msg = sim.set_waypoints(wps)
-    return jsonify({"ok": ok, "message": msg})
+    return jsonify({"ok": ok, "message": msg}) if ok else \
+        (jsonify({"ok": False, "error": msg}), 400)
 
 
 @app.route("/api/waypoints", methods=["DELETE"])

@@ -7,6 +7,7 @@ flask = types.ModuleType("flask")
 class _Fake:
     def __init__(self, *a, **k): pass
     def route(self, *a, **k): return lambda f: f
+    def after_request(self, f): return f
     def run(self, *a, **k): pass
 flask.Flask = _Fake
 flask.Response = _Fake
@@ -134,6 +135,39 @@ check("LINK_LOST raised", len(a5.snapshot()) == 1)
 a5.evaluate({"link_ok": False})   # missing keys must not crash
 check("alert engine survives sparse telemetry", True)
 
+# ---- hardening regression cases ----
+a6 = AlertEngine(MissionLog())
+ch = a6.evaluate(tele(battery_pct=None, battery_voltage=None))
+check("None battery -> no crash, no false alert", ch == [] and not a6.snapshot())
+ch = a6.evaluate(tele(battery_pct=-1))   # raw MAVLink 'unknown' sentinel
+check("-1% battery raises CRITICAL (listener maps to None upstream)",
+      any(c["id"] == "BATTERY_CRITICAL" for c in ch))
+
+a7 = AlertEngine(MissionLog())
+a7.evaluate(tele(battery_pct=20))                 # LOW active
+ch = a7.evaluate(tele(battery_pct=12))            # drops to CRITICAL
+ids_active = {x["id"] for x in a7.snapshot()}
+check("LOW auto-cleared when CRITICAL raises",
+      ids_active == {"BATTERY_CRITICAL"},
+      f"active={ids_active}")
+
+a8 = AlertEngine(MissionLog())
+ch = a8.evaluate(tele(dist_home_m=1600, geofence_m=1500))
+check("GEOFENCE_BREACH raised past fence", any(c["id"] == "GEOFENCE_BREACH" for c in ch))
+a8.evaluate(tele(dist_home_m=1400, geofence_m=1500))
+check("GEOFENCE holds in hysteresis band (1400m)", len(a8.snapshot()) == 1)
+a8.evaluate(tele(dist_home_m=1200, geofence_m=1500))
+check("GEOFENCE cleared at 0.8x fence", len(a8.snapshot()) == 0)
+a9 = AlertEngine(MissionLog())
+ch = a9.evaluate(tele(dist_home_m=5000))          # no geofence_m in telemetry
+check("no geofence field -> rule never fires", not a9.snapshot())
+
+a10 = AlertEngine(MissionLog())
+a10.evaluate(tele(battery_pct=20))
+a10.evaluate(tele(battery_pct=19, battery_voltage=22.1))
+check("active alert message refreshes with live values",
+      "19%" in a10.snapshot()[0]["message"])
+
 # ================= log export =================
 ml = MissionLog()
 ml.add("TEST", 'msg with, comma and "quotes"', "warning")
@@ -159,6 +193,63 @@ check("battery-critical failsafe -> RTH", sim3.mode == "RTH",
 sim4 = UAVSimulator(); sim4.batt_pct = 18
 ok, msg = sim4.arm_and_takeoff()
 check("takeoff refused below 20% battery", not ok, f"({msg})")
+
+# ================= new hardening: simulator =================
+# geofence failsafe
+sf = UAVSimulator(tick_hz=4, geofence_m=200.0)
+sf.arm_and_takeoff()
+sf.mode = "MANUAL"; sf.alt = 60
+sf.lat, _ = sf.home_lat + 0.003, 0   # ~330 m north of home
+sf._t = time.time() - 0.25
+sf.step()
+check("geofence breach forces RTH", sf.mode == "RTH", f"mode={sf.mode}")
+evs = [m for _, m in sf.drain_events()]
+check("geofence failsafe logged", any("Geofence" in m for m in evs))
+# operator RTH is respected (no re-trigger spam): stays RTH
+sf._t = time.time() - 0.25; sf.step()
+check("no repeat geofence event while returning",
+      not any("Geofence" in m for _, m in sf.drain_events()))
+
+# waypoint hardening
+sw = UAVSimulator()
+ok, msg = sw.set_waypoints([{"lat": float("nan"), "lon": 77.6}])
+check("NaN waypoint rejected", not ok, f"({msg})")
+ok, msg = sw.set_waypoints([{"lat": 12.98}])
+check("missing lon rejected", not ok)
+ok, msg = sw.set_waypoints([{"lat": 12.98, "lon": 77.6}] * 101)
+check(">100 waypoints rejected", not ok)
+
+# mission feasibility warning
+sm = UAVSimulator()
+sm.soc = 0.30   # low battery, long mission
+sm.set_waypoints([{"lat": sm.home_lat + 0.30, "lon": sm.home_lon}])  # ~33 km
+warn = [m for _, m in sm.drain_events()]
+check("infeasible mission warned", any("exceeds estimated range" in m for m in warn),
+      str(warn))
+
+# batt_accel drains faster but stays consistent
+b1 = UAVSimulator(tick_hz=4, batt_accel=50.0)
+b1.arm_and_takeoff()
+t_v = time.time()
+orig = simmod.time.time
+try:
+    for _ in range(400):   # 100 virtual seconds
+        t_v += 0.25
+        simmod.time.time = lambda: t_v
+        b1.step()
+finally:
+    simmod.time.time = orig
+check("batt_accel=50 drains visibly in 100s", b1.batt_pct < 95,
+      f"{b1.batt_pct}%")
+check("accelerated flight-time estimate scales down",
+      (b1.flight_time_remaining_s() or 0) < 600,
+      f"{b1.flight_time_remaining_s()}s")
+check("exhausted battery forces LAND/disarm",
+      b1.soc > 0 or b1.mode in ("LAND", "IDLE"),
+      f"soc={b1.soc:.2f} mode={b1.mode}")
+
+# snapshot exposes geofence for the UI
+check("snapshot carries geofence_m", UAVSimulator().snapshot()["geofence_m"] == 1500.0)
 
 print()
 if FAIL:

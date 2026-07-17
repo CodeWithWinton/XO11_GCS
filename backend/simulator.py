@@ -95,9 +95,14 @@ class UAVSimulator:
 
     MODES = ("IDLE", "TAKEOFF", "AUTO", "MANUAL", "HOLD", "RTH", "LAND")
 
-    def __init__(self, home_lat=12.9716, home_lon=77.5946, tick_hz=4.0):
+    def __init__(self, home_lat=12.9716, home_lon=77.5946, tick_hz=4.0,
+                 batt_accel=1.0, geofence_m=1500.0):
         self._lock = threading.RLock()
         self.tick = 1.0 / tick_hz
+        # batt_accel > 1 accelerates battery drain (demo videos);
+        # physics stays otherwise identical.
+        self.batt_accel = max(0.1, float(batt_accel))
+        self.geofence_m = max(50.0, float(geofence_m))
 
         self.home_lat, self.home_lon = home_lat, home_lon
         self.lat, self.lon = home_lat, home_lon
@@ -120,6 +125,10 @@ class UAVSimulator:
 
         self.waypoints = []    # list of dicts {lat, lon, alt}
         self.wp_index = 0
+
+        # smoothed power draw for a stable flight-time estimate
+        self._power_ema = None
+        self._fence_breached = False
 
         # wind
         self._wind_dir = random.uniform(0, 360)
@@ -156,13 +165,37 @@ class UAVSimulator:
 
     def set_waypoints(self, wps):
         with self._lock:
-            self.waypoints = [
-                {"lat": float(w["lat"]), "lon": float(w["lon"]),
-                 "alt": float(w.get("alt", CRUISE_ALT))}
-                for w in wps
-            ]
+            if len(wps) > 100:
+                return False, "Mission rejected — more than 100 waypoints"
+            try:
+                parsed = [
+                    {"lat": float(w["lat"]), "lon": float(w["lon"]),
+                     "alt": float(w.get("alt", CRUISE_ALT))}
+                    for w in wps
+                ]
+            except (KeyError, TypeError, ValueError):
+                return False, "Mission rejected — malformed waypoint"
+            for w in parsed:
+                if not all(math.isfinite(v) for v in (w["lat"], w["lon"], w["alt"])):
+                    return False, "Mission rejected — non-finite waypoint"
+            self.waypoints = parsed
             self.wp_index = 0
             self._event("MISSION", f"Mission uploaded — {len(self.waypoints)} waypoints")
+
+            # ---- feasibility check: mission length + return leg vs range ----
+            total_m = 0.0
+            prev = (self.lat, self.lon)
+            for w in parsed:
+                total_m += haversine_m(prev[0], prev[1], w["lat"], w["lon"])
+                prev = (w["lat"], w["lon"])
+            total_m += haversine_m(prev[0], prev[1], self.home_lat, self.home_lon)
+            usable_wh = max(0.0, (self.soc - 0.15) * PACK_CAPACITY_WH) / self.batt_accel
+            range_m = usable_wh / CRUISE_POWER_W * 3600.0 * (CRUISE_SPEED_KMH / 3.6)
+            if total_m > range_m:
+                self._event("WARNING",
+                            f"Mission length {total_m/1000:.1f} km exceeds estimated "
+                            f"range {range_m/1000:.1f} km at current battery — "
+                            f"expect battery failsafe mid-mission")
             return True, f"{len(self.waypoints)} waypoints accepted"
 
     def clear_waypoints(self):
@@ -203,7 +236,22 @@ class UAVSimulator:
             self._step_battery(dt)
             self._step_gps(dt)
             self._step_signal(dt)
+            self._step_geofence()
             return self.snapshot()
+
+    def _step_geofence(self):
+        """Geofence: warn-and-return failsafe. Operator RTH/LAND is respected."""
+        if not self.armed or self.mode in ("RTH", "LAND", "IDLE"):
+            self._fence_breached = False
+            return
+        d = haversine_m(self.lat, self.lon, self.home_lat, self.home_lon)
+        if d > self.geofence_m and not self._fence_breached:
+            self._fence_breached = True
+            self._event("FAILSAFE",
+                        f"Geofence breach at {d:.0f} m — automatic Return-To-Home engaged")
+            self._set_mode("RTH")
+        elif d <= 0.9 * self.geofence_m:
+            self._fence_breached = False
 
     def _step_wind(self, dt):
         # slowly wandering wind + gust envelope
@@ -292,8 +340,15 @@ class UAVSimulator:
         self.airspeed += (target_speed - self.airspeed) * min(1.0, 0.8 * dt)
         self.airspeed = max(0.0, min(MAX_SPEED_KMH, self.airspeed))
 
-        # ground speed = airspeed + wind component (never negative)
-        self.groundspeed = max(0.0, self.airspeed + self._wind_component_along(self.heading))
+        # ground speed = airspeed + wind component (never negative).
+        # Exception: when commanded to hold position (HOLD/LAND/TAKEOFF with
+        # zero target speed) the flight controller cancels wind drift — a
+        # multirotor does not blow away while position-holding.
+        if target_speed < 0.5 and self.airspeed < 2.0:
+            self.groundspeed = 0.0
+        else:
+            self.groundspeed = max(0.0, self.airspeed
+                                   + self._wind_component_along(self.heading))
 
         # -- altitude: rate-limited climb/descent --
         alt_err = target_alt - self.alt
@@ -329,7 +384,14 @@ class UAVSimulator:
         if head > 0 and self.airspeed > 5:
             power *= 1.0 + min(0.25, head / 100.0)
 
-        self.soc = max(0.0, self.soc - (power * dt / 3600.0) / PACK_CAPACITY_WH)
+        self.soc = max(0.0, self.soc - (power * self.batt_accel * dt / 3600.0)
+                       / PACK_CAPACITY_WH)
+
+        # exponential moving average of power -> stable flight-time estimate
+        if self._power_ema is None:
+            self._power_ema = power
+        else:
+            self._power_ema += (power - self._power_ema) * min(1.0, dt / 10.0)
 
         ocv = soc_to_cell_v(self.soc) * CELL_COUNT
         nominal_v = 3.7 * CELL_COUNT
@@ -342,6 +404,10 @@ class UAVSimulator:
         if self.armed and self.batt_pct < 15 and self.mode not in ("RTH", "LAND", "IDLE"):
             self._event("FAILSAFE", "Battery critical — automatic Return-To-Home engaged")
             self._set_mode("RTH")
+        # battery exhausted: forced landing wherever we are
+        if self.armed and self.soc <= 0.0 and self.mode != "LAND":
+            self._event("FAILSAFE", "Battery exhausted — forced landing")
+            self._set_mode("LAND")
 
     def _step_gps(self, dt):
         # satellites wander between 5 and 18, mostly healthy
@@ -366,11 +432,13 @@ class UAVSimulator:
     # ---------------- output ----------------
 
     def flight_time_remaining_s(self):
-        """Estimate seconds of flight remaining at current draw (reserve to 10% SOC)."""
+        """Estimate seconds of flight remaining (reserve to 10% SOC).
+        Uses EMA-smoothed power so the number doesn't jump every tick,
+        and accounts for batt_accel so demo mode stays self-consistent."""
         if self.current_a < 1.0 or not self.armed:
             return None
         usable_wh = max(0.0, (self.soc - 0.10) * PACK_CAPACITY_WH)
-        power = self.current_a * self.batt_v
+        power = (self._power_ema or self.current_a * self.batt_v) * self.batt_accel
         if power <= 0:
             return None
         return int(usable_wh / power * 3600.0)
@@ -403,4 +471,5 @@ class UAVSimulator:
                 "wp_index": self.wp_index,
                 "wp_total": len(self.waypoints),
                 "dist_home_m": round(dist_home, 1),
+                "geofence_m": self.geofence_m,
             }

@@ -46,8 +46,17 @@ Deploy the `frontend/` folder as a static site. The dashboard detects there's no
 ### Run tests
 
 ```bash
-cd backend && python3 test_offline.py    # 37 checks, no dependencies needed
+cd backend && python3 test_offline.py    # 56 checks, no dependencies needed
 ```
+
+### Configuration (env vars)
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `GCS_SOURCE` | `sim` | `sim` or `mavlink` |
+| `GCS_GEOFENCE_M` | `1500` | Geofence radius (m) — breach raises a critical alert and forces RTH |
+| `GCS_BATT_ACCEL` | `1.0` | Battery drain multiplier (sim only) — set e.g. `30` so a short demo video shows the LOW → CRITICAL → auto-RTH cascade |
+| `PORT` | `5000` | Server port |
 
 ## Architecture
 
@@ -67,6 +76,22 @@ Key decisions:
 - **Source-agnostic telemetry shape** — the simulator and the MAVLink listener emit the identical dict, so the frontend doesn't know or care where data comes from. Swapping in a real UAV is a config change, not a rewrite.
 - **Calibrated physics, not random numbers** — 6S Li-ion pack with a real discharge curve (4.20→3.30 V/cell) and load-dependent voltage sag; power draw varies with climb/cruise/hover/headwind; ground speed = airspeed + wind component; RF signal follows log-distance path loss from the home antenna; turn rate and climb rate are limited like a real airframe. Flight-time-remaining is computed from live current draw with a 10% reserve.
 - **Safety-first command handling** — takeoff refused below 20% battery, AUTO refused with no mission, waypoint altitudes validated to a 5–400 m envelope, and a battery-critical failsafe forces RTH regardless of operator input.
+
+## Resilience & safety hardening (v2)
+
+The system is designed so that no single glitch — bad packet, dropped socket, unknown sensor value, or operator mistake — can silently take the ground station down or mislead the operator:
+
+- **Crash-proof telemetry loop.** Any exception in one telemetry tick is logged as a SYSTEM event and the loop continues; a glitch can never freeze the whole GCS.
+- **Stale-link watchdog (frontend).** Even if the SSE socket stays open while data stops flowing, the header badge flips to "LINK STALE — NO DATA" within 6 s.
+- **MAVLink unknown-value semantics.** MAVLink reports unknowns as sentinels (`battery_remaining = -1`, `voltage = 65535`, `rssi = 255`). These are mapped to `null` end-to-end, so the UI shows "—" instead of a false red 0% and the alert engine never raises a false BATTERY CRITICAL.
+- **MAVLink auto-reconnect.** A corrupt packet or dropped socket triggers reconnection with logging — ingest never dies permanently. Home position is captured from the first fix (or HOME_POSITION) so distance-to-home works with real vehicles too.
+- **Geofence.** Configurable radius drawn on the map; a breach raises a critical alert and engages auto-RTH (operator RTH/LAND is respected, no re-trigger spam thanks to hysteresis). Waypoints outside the fence are rejected at upload.
+- **Mission feasibility check.** On upload, total mission length plus the return leg is compared against estimated range at current battery; infeasible missions produce an explicit warning in the log.
+- **Battery-exhausted failsafe.** At 0% the simulator forces an immediate landing — the UAV can't fly on an empty pack.
+- **Wind-accurate position hold.** In HOLD/LAND/TAKEOFF the flight controller cancels wind drift (a real multirotor doesn't blow away while position-holding); in forward flight ground speed = airspeed + wind component.
+- **Input hardening.** Waypoints: max 100, numeric/finite/range-checked, altitude envelope 5–400 m, geofence-checked — malformed JSON can't corrupt a mission. All API errors return structured `{ok, error}` with correct status codes.
+- **Alert correctness.** All thresholds use hysteresis; BATTERY LOW is auto-superseded by CRITICAL (no duplicate banners); active alert messages refresh with live values; None/NaN values can never crash a rule.
+- **UI robustness.** Log/alert text is HTML-escaped, exports use anchor downloads (popup-blocker-proof), log memory is capped, waypoints are drag-editable and right-click deletable, and every panel renders "—" rather than misleading zeros when data is missing.
 
 ## API
 

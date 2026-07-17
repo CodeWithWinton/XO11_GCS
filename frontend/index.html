@@ -260,14 +260,42 @@ const homeMarker = L.marker([12.9716, 77.5946], { icon: homeIcon }).addTo(map)
 const trail   = L.polyline([], { color: "#22d3ee", weight: 2.5, opacity: 0.85 }).addTo(map);
 const missionLine = L.polyline([], { color: "#fbbf24", weight: 2, dashArray: "6 6" }).addTo(map);
 let wpMarkers = [];
+let fenceCircle = null;
+
+function drawGeofence(tele) {
+  if (!tele.home || tele.geofence_m == null) return;
+  const center = [tele.home.lat, tele.home.lon];
+  if (!fenceCircle) {
+    fenceCircle = L.circle(center, { radius: tele.geofence_m, color: "#f87171",
+      weight: 1.2, dashArray: "4 8", fill: false, opacity: 0.6 })
+      .addTo(map).bindTooltip(`Geofence — ${tele.geofence_m} m`);
+  } else {
+    fenceCircle.setLatLng(center);
+    if (fenceCircle.getRadius() !== tele.geofence_m) fenceCircle.setRadius(tele.geofence_m);
+  }
+}
 
 function redrawMission() {
   wpMarkers.forEach(m => map.removeLayer(m));
-  wpMarkers = S.pendingWps.map((w, i) =>
-    L.marker([w.lat, w.lon], {
+  wpMarkers = S.pendingWps.map((w, i) => {
+    const m = L.marker([w.lat, w.lon], {
+      draggable: true,
       icon: L.divIcon({ className: "", iconSize: [22, 22], iconAnchor: [11, 11],
         html: `<div class="wp-label">${i + 1}</div>` })
-    }).addTo(map).bindTooltip(`WP ${i + 1} — alt ${w.alt} m`));
+    }).addTo(map).bindTooltip(`WP ${i + 1} — alt ${w.alt} m (drag to move, right-click to delete)`);
+    m.on("dragend", e => {
+      const ll = e.target.getLatLng();
+      S.pendingWps[i] = { ...w, lat: +ll.lat.toFixed(6), lon: +ll.lng.toFixed(6) };
+      missionLine.setLatLngs(S.pendingWps.map(p => [p.lat, p.lon]));
+      toast(`WP ${i + 1} moved — re-upload the mission to apply`);
+    });
+    m.on("contextmenu", () => {
+      S.pendingWps.splice(i, 1);
+      redrawMission();
+      toast(`WP removed — ${S.pendingWps.length} left; re-upload to apply`);
+    });
+    return m;
+  });
   missionLine.setLatLngs(S.pendingWps.map(w => [w.lat, w.lon]));
 }
 
@@ -352,40 +380,49 @@ function render(tele) {
     }
   }
   if (tele.home) homeMarker.setLatLng([tele.home.lat, tele.home.lon]);
+  drawGeofence(tele);
   if (S.follow) map.panTo(pos, { animate: true, duration: 0.4 });
 
-  // tiles
-  const set = (id, txt, cls) => { const el = $(id);
-    el.childNodes[0].nodeValue = txt;
-    el.className = "v" + (cls ? " " + cls : "") + (id === "t-gps" ? "" : ""); };
+  // tiles (null-safe: unknown values show "—", never a false red zero)
   $("t-alt").innerHTML  = `${(tele.alt ?? 0).toFixed(1)}<span class="u">m</span>`;
   $("t-climb").innerHTML = `${(tele.climb ?? 0) >= 0 ? "+" : ""}${(tele.climb ?? 0).toFixed(1)}<span class="u">m/s</span>`;
-  $("t-air").innerHTML  = `${(tele.airspeed ?? 0).toFixed(1)}<span class="u">km/h</span>`;
-  $("t-gnd").innerHTML  = `${(tele.groundspeed ?? 0).toFixed(1)}<span class="u">km/h</span>`;
+  $("t-air").innerHTML  = tele.airspeed == null ? "—" :
+    `${tele.airspeed.toFixed(1)}<span class="u">km/h</span>`;
+  $("t-gnd").innerHTML  = tele.groundspeed == null ? "—" :
+    `${tele.groundspeed.toFixed(1)}<span class="u">km/h</span>`;
 
-  const bp = tele.battery_pct ?? 0, bv = tele.battery_voltage ?? 0;
+  const bp = tele.battery_pct, bv = tele.battery_voltage;
   const battEl = $("t-batt");
-  battEl.textContent = `${bp.toFixed(0)}%  ·  ${bv.toFixed(1)} V` +
-    (tele.current_a ? `  ·  ${tele.current_a.toFixed(1)} A` : "");
-  battEl.className = "v " + sevClass(bp, 25, 15, false);
-  const fill = $("batt-fill");
-  fill.style.width = Math.max(0, Math.min(100, bp)) + "%";
-  fill.style.background = bp < 15 ? "var(--red)" : bp < 25 ? "var(--amber)" : "var(--green)";
+  if (bp == null && bv == null) {
+    battEl.textContent = "—"; battEl.className = "v";
+    $("batt-fill").style.width = "0%";
+  } else {
+    battEl.textContent =
+      (bp != null ? `${bp.toFixed(0)}%` : "—%") +
+      (bv != null ? `  ·  ${bv.toFixed(1)} V` : "") +
+      (tele.current_a != null ? `  ·  ${tele.current_a.toFixed(1)} A` : "");
+    battEl.className = "v " + (bp != null ? sevClass(bp, 25, 15, false) : "");
+    const fill = $("batt-fill");
+    fill.style.width = Math.max(0, Math.min(100, bp ?? 0)) + "%";
+    fill.style.background = bp == null ? "var(--dim)" :
+      bp < 15 ? "var(--red)" : bp < 25 ? "var(--amber)" : "var(--green)";
+  }
 
   $("t-ftr").textContent = fmtTime(tele.flight_time_remaining_s);
   $("t-gps").textContent = `${tele.lat.toFixed(6)}, ${tele.lon.toFixed(6)}`;
   const satsEl = $("t-sats");
   satsEl.textContent = tele.sats ?? "—";
-  satsEl.className = "v " + sevClass(tele.sats ?? 0, 8, 6, false);
-  $("t-home").innerHTML = `${(tele.dist_home_m ?? 0).toFixed(0)}<span class="u">m</span>`;
+  satsEl.className = "v " + (tele.sats != null ? sevClass(tele.sats, 8, 6, false) : "");
+  $("t-home").innerHTML = tele.dist_home_m == null ? "—" :
+    `${tele.dist_home_m.toFixed(0)}<span class="u">m</span>`;
 
-  // signal bars
-  const sig = tele.signal_pct ?? 0;
-  $("t-rssi").textContent = tele.rssi_dbm ? `${tele.rssi_dbm} dBm` : "";
+  // signal bars (null = no data: all bars off, no false WEAK color)
+  const sig = tele.signal_pct;
+  $("t-rssi").textContent = tele.rssi_dbm != null ? `${tele.rssi_dbm} dBm` : "";
   const bars = document.querySelectorAll("#sig-bars i");
   bars.forEach((b, i) => {
     b.style.height = (5 + i * 3.2) + "px";
-    const on = sig > (i + 0.5) * 20;
+    const on = sig != null && sig > (i + 0.5) * 20;
     b.className = on ? ("on" + (sig < 35 ? " crit" : sig < 55 ? " warn" : "")) : "";
   });
 
@@ -401,21 +438,24 @@ function render(tele) {
 }
 
 /* ---------------- alerts ---------------- */
+const esc = s => String(s).replace(/[&<>"']/g,
+  c => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+
 function renderAlerts(active, changes) {
   const list = $("alerts-list");
   if (!active.length) {
     list.innerHTML = '<div class="none-msg">No active alerts</div>';
   } else {
     list.innerHTML = active.map(a =>
-      `<div class="alert-row ${a.severity}">
-        <span class="t">${(a.raised_at || "").slice(11, 19)}</span>
-        <span>${a.severity === "critical" ? "⛔" : "⚠"} ${a.message}</span>
+      `<div class="alert-row ${esc(a.severity)}">
+        <span class="t">${esc((a.raised_at || "").slice(11, 19))}</span>
+        <span>${a.severity === "critical" ? "⛔" : "⚠"} ${esc(a.message)}</span>
       </div>`).join("");
   }
   // banners on map for raised alerts
   const banner = $("alert-banner");
   banner.innerHTML = active.map(a =>
-    `<div class="banner ${a.severity}">${a.severity === "critical" ? "⛔" : "⚠"} ${a.message}</div>`
+    `<div class="banner ${esc(a.severity)}">${a.severity === "critical" ? "⛔" : "⚠"} ${esc(a.message)}</div>`
   ).join("");
   (changes || []).forEach(c => {
     if (c.action === "raised" && c.severity === "critical") beep(3);
@@ -446,17 +486,25 @@ function addLogLines(entries) {
   entries.forEach(e => {
     clientLog.push(e);
     const div = document.createElement("div");
-    div.className = "log-line " + (e.severity || "info");
-    div.innerHTML = `<span class="lt">${e.ts.slice(11, 19)}</span> ` +
-      `<span class="ltype">[${e.type}]</span> ${e.message}`;
+    div.className = "log-line " + esc(e.severity || "info");
+    div.innerHTML = `<span class="lt">${esc(e.ts.slice(11, 19))}</span> ` +
+      `<span class="ltype">[${esc(e.type)}]</span> ${esc(e.message)}`;
     list.appendChild(div);
   });
+  while (clientLog.length > 5000) clientLog.shift();
   while (list.children.length > 400) list.removeChild(list.firstChild);
   if (atBottom) list.scrollTop = list.scrollHeight;
 }
 
 function exportLog(fmt) {
-  if (!S.demo) { window.open(`/api/log/export?format=${fmt}`, "_blank"); return; }
+  if (!S.demo) {
+    // anchor click instead of window.open — popup blockers eat window.open
+    const a = document.createElement("a");
+    a.href = `/api/log/export?format=${fmt}`;
+    a.download = "";
+    document.body.appendChild(a); a.click(); a.remove();
+    return;
+  }
   // demo mode: build file client-side
   let content, mime;
   if (fmt === "csv") {
@@ -484,11 +532,11 @@ function toast(msg) {
 }
 
 /* ---------------- backend link (SSE with auto-reconnect) ---------------- */
-let es = null, reconnectDelay = 1000, gotFirstMessage = false;
+let es = null, reconnectDelay = 1000, gotFirstMessage = false, lastMsgAt = 0;
 function connectSSE() {
   try { es = new EventSource("/stream"); } catch (e) { startDemo(); return; }
   es.onmessage = ev => {
-    gotFirstMessage = true; reconnectDelay = 1000;
+    gotFirstMessage = true; reconnectDelay = 1000; lastMsgAt = Date.now();
     setConn(true);
     const p = JSON.parse(ev.data);
     render(p.telemetry);
@@ -502,6 +550,16 @@ function connectSSE() {
     reconnectDelay = Math.min(reconnectDelay * 2, 10000);
   };
 }
+// stale-data watchdog: the SSE socket can stay open while the server-side
+// producer is wedged — data silently freezing must be visible to the operator
+setInterval(() => {
+  if (S.demo || !gotFirstMessage) return;
+  if (Date.now() - lastMsgAt > 6000) {
+    const b = $("conn-badge");
+    b.textContent = "LINK STALE — NO DATA";
+    b.className = "badge bad";
+  }
+}, 2000);
 function setConn(ok) {
   const b = $("conn-badge");
   if (S.demo) { b.textContent = "DEMO MODE"; b.className = "badge ok"; return; }
@@ -689,7 +747,8 @@ class DemoSim {
     // speed / alt
     this.air += (tgtSpd - this.air) * Math.min(1, 0.8 * dt);
     const wind = (this.windS) * -Math.cos((this.windD - this.hdg) * Math.PI / 180);
-    this.gnd = Math.max(0, this.air + wind);
+    // position-hold cancels wind drift (a quad doesn't blow away in HOLD/LAND)
+    this.gnd = (tgtSpd < 0.5 && this.air < 2) ? 0 : Math.max(0, this.air + wind);
     const aerr = tgtAlt - this.alt, rate = aerr > 0 ? 2.5 : -1.8;
     if (Math.abs(aerr) < Math.abs(rate) * dt) { this.climb = 0; this.alt = tgtAlt; }
     else { this.climb = rate; this.alt += rate * dt; }
@@ -708,9 +767,13 @@ class DemoSim {
     const dh = this.distM(this.lat, this.lon, this.homeLat, this.homeLon);
     const rssi = Math.max(-110, Math.min(-40, -40 - 22 * Math.log10(Math.max(5, dh) / 5) + (Math.random() - 0.5) * 3));
     this.sig = Math.max(0, Math.min(100, (rssi + 110) / 60 * 100));
-    // failsafe
+    // failsafes: battery-critical and geofence both force RTH
     if (this.armed && this.soc * 100 < 15 && !["RTH", "LAND", "IDLE"].includes(this.mode)) {
       this.ev("FAILSAFE", "Battery critical — automatic Return-To-Home engaged", "critical");
+      this.setMode("RTH");
+    }
+    if (this.armed && dh > 1500 && !["RTH", "LAND", "IDLE"].includes(this.mode)) {
+      this.ev("FAILSAFE", `Geofence breach at ${dh.toFixed(0)} m — automatic Return-To-Home engaged`, "critical");
       this.setMode("RTH");
     }
     const cur = pw / (volts || 22);
@@ -728,6 +791,7 @@ class DemoSim {
       home: { lat: this.homeLat, lon: this.homeLon },
       wind_kmh: +this.windS.toFixed(1), wind_dir: Math.round(this.windD),
       wp_index: this.wpi, wp_total: this.wps.length, dist_home_m: +dh.toFixed(1),
+      geofence_m: 1500,
       link_ok: true
     };
   }
