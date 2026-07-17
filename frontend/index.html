@@ -162,13 +162,13 @@ header{grid-area:header;display:flex;align-items:center;gap:14px;flex-wrap:wrap;
   border:1px solid var(--line2);border-radius:4px;overflow:hidden;background:#04070b;
   box-shadow:0 10px 34px rgba(0,0,0,.65);perspective:430px}
 #fpv.hidden{display:none}
-#fpv-world{position:absolute;left:50%;top:76%;width:260%;height:260%;
+#fpv-world{position:absolute;left:50%;top:70%;width:260%;height:260%;
   transform:translate(-50%,-50%) rotateX(58deg) rotateZ(0deg);
   transition:transform .28s linear;will-change:transform}
 #fpv-map{width:100%;height:100%;background:#04070b;pointer-events:none}
-/* opaque sky down to exactly 50% — the terrain must START at the artificial
-   horizon line (y=110/220), otherwise the HUD reads as uncalibrated */
-#fpv-sky{position:absolute;left:0;right:0;top:0;height:50%;z-index:2;pointer-events:none;
+/* opaque sky down to exactly 38% — camera tilted down like a real FPV feed,
+   terrain starts at the artificial horizon line (y=84/220) */
+#fpv-sky{position:absolute;left:0;right:0;top:0;height:38%;z-index:2;pointer-events:none;
   background:linear-gradient(#05090f 0%,#0b1a2e 55%,#1d3f5e 88%,#7fa8c9 100%)}
 #fpv-hud{position:absolute;inset:0;z-index:4;pointer-events:none;width:100%;height:100%}
 #fpv::after{content:"";position:absolute;inset:0;z-index:5;pointer-events:none;
@@ -237,24 +237,24 @@ header{grid-area:header;display:flex;align-items:center;gap:14px;flex-wrap:wrap;
       <div id="fpv-world"><div id="fpv-map"></div></div>
       <div id="fpv-sky"></div>
       <svg id="fpv-hud" viewBox="0 0 360 220" preserveAspectRatio="none">
-        <!-- artificial horizon: banks with roll, shifts with pitch -->
+        <!-- artificial horizon: banks with roll, shifts with pitch (level = y84 = 38%) -->
         <g id="fpv-horizon">
-          <line x1="-260" y1="110" x2="140" y2="110" stroke="#7ce38b" stroke-width="1.6"/>
-          <line x1="220" y1="110" x2="620" y2="110" stroke="#7ce38b" stroke-width="1.6"/>
+          <line x1="-260" y1="84" x2="140" y2="84" stroke="#7ce38b" stroke-width="1.6"/>
+          <line x1="220" y1="84" x2="620" y2="84" stroke="#7ce38b" stroke-width="1.6"/>
           <!-- pitch ladder -->
-          <line x1="120" y1="82"  x2="150" y2="82"  stroke="#7ce38b" stroke-width="1"/>
-          <line x1="210" y1="82"  x2="240" y2="82"  stroke="#7ce38b" stroke-width="1"/>
-          <text x="112" y="85"  fill="#7ce38b" font-size="8" text-anchor="end" font-family="monospace">10</text>
-          <line x1="120" y1="138" x2="150" y2="138" stroke="#7ce38b" stroke-width="1" stroke-dasharray="5 4"/>
-          <line x1="210" y1="138" x2="240" y2="138" stroke="#7ce38b" stroke-width="1" stroke-dasharray="5 4"/>
-          <text x="112" y="141" fill="#7ce38b" font-size="8" text-anchor="end" font-family="monospace">-10</text>
+          <line x1="120" y1="56"  x2="150" y2="56"  stroke="#7ce38b" stroke-width="1"/>
+          <line x1="210" y1="56"  x2="240" y2="56"  stroke="#7ce38b" stroke-width="1"/>
+          <text x="112" y="59"  fill="#7ce38b" font-size="8" text-anchor="end" font-family="monospace">10</text>
+          <line x1="120" y1="112" x2="150" y2="112" stroke="#7ce38b" stroke-width="1" stroke-dasharray="5 4"/>
+          <line x1="210" y1="112" x2="240" y2="112" stroke="#7ce38b" stroke-width="1" stroke-dasharray="5 4"/>
+          <text x="112" y="115" fill="#7ce38b" font-size="8" text-anchor="end" font-family="monospace">-10</text>
         </g>
-        <!-- flight-path crosshair (fixed) -->
+        <!-- flight-path crosshair (fixed, on the level horizon) -->
         <g stroke="#eafff0" stroke-width="1.6" fill="none">
-          <circle cx="180" cy="110" r="5"/>
-          <line x1="163" y1="110" x2="175" y2="110"/>
-          <line x1="185" y1="110" x2="197" y2="110"/>
-          <line x1="180" y1="99" x2="180" y2="105"/>
+          <circle cx="180" cy="84" r="5"/>
+          <line x1="163" y1="84" x2="175" y2="84"/>
+          <line x1="185" y1="84" x2="197" y2="84"/>
+          <line x1="180" y1="73" x2="180" y2="79"/>
         </g>
         <!-- compass tape (ticks generated in JS) -->
         <clipPath id="fpv-tape-clip"><rect x="80" y="0" width="200" height="26"/></clipPath>
@@ -262,12 +262,12 @@ header{grid-area:header;display:flex;align-items:center;gap:14px;flex-wrap:wrap;
         <path d="M 180 22 l -5 -7 h 10 z" fill="#ffb454"/>
         <!-- speed / altitude boxes -->
         <g font-family="monospace">
-          <rect x="10" y="92" width="54" height="34" fill="rgba(4,7,11,.55)" stroke="#7ce38b" stroke-width="1"/>
-          <text id="fpv-speed" x="37" y="112" fill="#eafff0" font-size="15" text-anchor="middle" font-weight="bold">0</text>
-          <text x="37" y="123" fill="#7ce38b" font-size="7" text-anchor="middle">GS KM/H</text>
-          <rect x="296" y="92" width="54" height="34" fill="rgba(4,7,11,.55)" stroke="#7ce38b" stroke-width="1"/>
-          <text id="fpv-alt" x="323" y="112" fill="#eafff0" font-size="15" text-anchor="middle" font-weight="bold">0</text>
-          <text x="323" y="123" fill="#7ce38b" font-size="7" text-anchor="middle">ALT M</text>
+          <rect x="10" y="66" width="54" height="34" fill="rgba(4,7,11,.55)" stroke="#7ce38b" stroke-width="1"/>
+          <text id="fpv-speed" x="37" y="86" fill="#eafff0" font-size="15" text-anchor="middle" font-weight="bold">0</text>
+          <text x="37" y="97" fill="#7ce38b" font-size="7" text-anchor="middle">GS KM/H</text>
+          <rect x="296" y="66" width="54" height="34" fill="rgba(4,7,11,.55)" stroke="#7ce38b" stroke-width="1"/>
+          <text id="fpv-alt" x="323" y="86" fill="#eafff0" font-size="15" text-anchor="middle" font-weight="bold">0</text>
+          <text x="323" y="97" fill="#7ce38b" font-size="7" text-anchor="middle">ALT M</text>
           <text id="fpv-mode" x="180" y="206" fill="#7ce38b" font-size="10" text-anchor="middle" letter-spacing="2">IDLE</text>
           <text id="fpv-batt" x="323" y="206" fill="#7ce38b" font-size="9" text-anchor="middle">--%</text>
           <text id="fpv-hdgv" x="180" y="36" fill="#eafff0" font-size="10" text-anchor="middle" font-weight="bold">000°</text>
@@ -1140,7 +1140,7 @@ function updateFPV(tele) {
 
   // HUD
   $("fpv-horizon").setAttribute("transform",
-    `rotate(${(-fpvRoll).toFixed(1)} 180 110) translate(0 ${(pitch * 2.4).toFixed(1)})`);
+    `rotate(${(-fpvRoll).toFixed(1)} 180 84) translate(0 ${(pitch * 2.4).toFixed(1)})`);
   $("fpv-tape").setAttribute("transform", `translate(${(180 - hdg * 2.2).toFixed(1)} 0)`);
   $("fpv-hdgv").textContent = String(Math.round(hdg)).padStart(3, "0") + "°";
   $("fpv-speed").textContent = (tele.groundspeed ?? 0).toFixed(0);
