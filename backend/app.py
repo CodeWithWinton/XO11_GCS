@@ -112,70 +112,88 @@ def _num(tele, key, default):
 
 class AlertEngine:
     """
-    Each rule: (id, severity, trigger_fn, clear_fn, message_fn)
-    Hysteresis: trigger and clear thresholds differ, so a value hovering
-    at the boundary doesn't spam alerts.
+    Each rule: (id, severity, trigger_fn, clear_fn, message_fn, persist_s)
+    Two anti-flap mechanisms:
+      - hysteresis: trigger and clear thresholds differ
+      - persistence: fast-fluctuating signals (GPS sats, RF) must stay bad
+        for persist_s continuous seconds before the alert raises
     """
 
     def __init__(self, log):
         self.log = log
-        self.active = {}   # id -> alert dict
+        self.active = {}    # id -> alert dict
+        self._pending = {}  # id -> first time trigger became true
         self._lock = threading.Lock()
         self.rules = [
             ("BATTERY_CRITICAL", "critical",
              lambda t: _num(t, "battery_pct", 100) < 15,
              lambda t: _num(t, "battery_pct", 100) >= 17,
              lambda t: f"Battery CRITICAL: {_num(t, 'battery_pct', 0):.0f}% "
-                       f"({_num(t, 'battery_voltage', 0):.1f} V) — land immediately"),
+                       f"({_num(t, 'battery_voltage', 0):.1f} V) — land immediately",
+             0.0),
             ("BATTERY_LOW", "warning",
              lambda t: _num(t, "battery_pct", 100) < 25,
              lambda t: _num(t, "battery_pct", 100) >= 27,
              lambda t: f"Battery LOW: {_num(t, 'battery_pct', 0):.0f}% "
-                       f"({_num(t, 'battery_voltage', 0):.1f} V)"),
+                       f"({_num(t, 'battery_voltage', 0):.1f} V)",
+             0.0),
             ("GPS_LOST", "warning",
              lambda t: _num(t, "sats", 99) < 6,
              lambda t: _num(t, "sats", 99) >= 7,
-             lambda t: f"GPS degraded: only {_num(t, 'sats', 0):.0f} satellites locked"),
+             lambda t: f"GPS degraded: only {_num(t, 'sats', 0):.0f} satellites locked",
+             3.0),
             ("SIGNAL_WEAK", "warning",
              lambda t: _num(t, "signal_pct", 100) < 35,
              lambda t: _num(t, "signal_pct", 100) >= 45,
-             lambda t: f"Signal WEAK: link quality {_num(t, 'signal_pct', 0):.0f}%"),
+             lambda t: f"Signal WEAK: link quality {_num(t, 'signal_pct', 0):.0f}%",
+             3.0),
             ("GEOFENCE_BREACH", "critical",
              lambda t: _num(t, "dist_home_m", 0) > _num(t, "geofence_m", float("inf")),
              lambda t: _num(t, "dist_home_m", 0) <= 0.9 * _num(t, "geofence_m", float("inf")),
              lambda t: f"GEOFENCE breach: {_num(t, 'dist_home_m', 0):.0f} m from home "
-                       f"(limit {_num(t, 'geofence_m', 0):.0f} m)"),
+                       f"(limit {_num(t, 'geofence_m', 0):.0f} m)",
+             0.0),
             ("LINK_LOST", "critical",
              lambda t: t.get("link_ok") is False,
              lambda t: t.get("link_ok", True) is True,
-             lambda t: "Telemetry link LOST — no heartbeat"),
+             lambda t: "Telemetry link LOST — no heartbeat",
+             2.0),
         ]
 
     def evaluate(self, tele):
         """Returns list of newly raised/cleared alert events."""
         changes = []
+        now = time.time()
         with self._lock:
-            for aid, sev, trig, clear, msg in self.rules:
+            for aid, sev, trig, clear, msg, persist in self.rules:
                 # BATTERY_LOW is superseded by BATTERY_CRITICAL
                 if aid == "BATTERY_LOW" and ("BATTERY_CRITICAL" in self.active
                                              or _num(tele, "battery_pct", 100) < 15):
                     if aid in self.active:   # upgrade in progress: drop LOW
                         alert = self.active.pop(aid)
                         changes.append({"action": "cleared", **alert})
+                    self._pending.pop(aid, None)
                     continue
                 if aid not in self.active:
                     try:
                         fire = trig(tele)
                     except (TypeError, KeyError, ValueError):
                         fire = False
-                    if fire:
-                        alert = {"id": aid, "severity": sev,
-                                 "message": msg(tele),
-                                 "raised_at": datetime.now(timezone.utc)
-                                 .astimezone().isoformat(timespec="seconds")}
-                        self.active[aid] = alert
-                        self.log.add("ALERT", alert["message"], sev)
-                        changes.append({"action": "raised", **alert})
+                    if not fire:
+                        self._pending.pop(aid, None)
+                        continue
+                    # persistence gate: condition must hold continuously
+                    first = self._pending.setdefault(aid, now)
+                    if now - first < persist:
+                        continue
+                    self._pending.pop(aid, None)
+                    alert = {"id": aid, "severity": sev,
+                             "message": msg(tele),
+                             "raised_at": datetime.now(timezone.utc)
+                             .astimezone().isoformat(timespec="seconds")}
+                    self.active[aid] = alert
+                    self.log.add("ALERT", alert["message"], sev)
+                    changes.append({"action": "raised", **alert})
                 else:
                     try:
                         ok = clear(tele)

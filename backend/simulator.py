@@ -130,6 +130,12 @@ class UAVSimulator:
         self._power_ema = None
         self._fence_breached = False
 
+        # episodic GPS model state
+        self._gps_episode_t = 0.0
+        self._gps_episode_sats = 4
+        self._gps_healthy_sats = 14
+        self._gps_move_acc = 0.0
+
         # wind
         self._wind_dir = random.uniform(0, 360)
         self._wind_kmh = random.uniform(4, 12)
@@ -410,13 +416,33 @@ class UAVSimulator:
             self._set_mode("LAND")
 
     def _step_gps(self, dt):
-        # satellites wander between 5 and 18, mostly healthy
-        drift = random.gauss(0, 0.8)
-        if random.random() < 0.004:   # rare degradation episode
-            drift -= random.uniform(3, 6)
-        self.sats = int(max(3, min(18, self.sats + round(drift))))
-        if random.random() < 0.3:     # recovery pull toward healthy
-            self.sats = min(18, self.sats + (1 if self.sats < 12 else 0))
+        """Episodic GPS model: healthy (12-16 sats) most of the time, with
+        rare degradation episodes lasting 15-40 s that dip to 3-5 sats.
+        This mirrors real receivers (multipath under structures, ionospheric
+        scintillation) and avoids threshold flapping in the alert system."""
+        if self._gps_episode_t > 0:
+            self._gps_episode_t -= dt
+            target = self._gps_episode_sats
+        else:
+            target = self._gps_healthy_sats
+            # occasionally re-pick the healthy baseline
+            if random.random() < 0.01 * dt * 4:
+                self._gps_healthy_sats = random.randint(12, 16)
+            # ~once every few minutes: start a degradation episode
+            if random.random() < 0.0015 * dt * 4:
+                self._gps_episode_t = random.uniform(15, 40)
+                self._gps_episode_sats = random.randint(3, 5)
+        # move one satellite at a time toward the target (~2 sats/s max)
+        self._gps_move_acc += dt
+        if self._gps_move_acc >= 0.5:
+            self._gps_move_acc = 0.0
+            if self.sats < target:
+                self.sats += 1
+            elif self.sats > target:
+                self.sats -= 1
+            elif random.random() < 0.15:      # tiny jitter around baseline
+                self.sats += random.choice([-1, 1])
+        self.sats = int(max(3, min(18, self.sats)))
         self.hdop = round(max(0.5, min(6.0, 12.0 / max(4, self.sats)
                                        + random.gauss(0, 0.05))), 2)
 

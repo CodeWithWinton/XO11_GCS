@@ -4,15 +4,20 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>XO11 GCS — Ground Control Station</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
 <style>
 :root{
-  --bg:#0b0f14; --panel:#121820; --panel2:#0e141b; --line:#1e2936;
-  --text:#d7e1ec; --dim:#7d8fa3; --accent:#22d3ee; --green:#34d399;
-  --amber:#fbbf24; --red:#f87171; --font:"Segoe UI",system-ui,-apple-system,sans-serif;
-  --mono:"Cascadia Code","JetBrains Mono",Consolas,monospace;
+  --bg:#06080c; --panel:#0d1118; --panel2:#090d13; --line:#1a2230; --line2:#273245;
+  --text:#dce6f2; --dim:#6e7f97; --accent:#7ce38b; --green:#7ce38b;
+  --amber:#ffb454; --red:#ff5c5c;
+  --glow:0 0 10px rgba(124,227,139,.35);
+  --font:"Rajdhani","Segoe UI",system-ui,sans-serif;
+  --mono:"IBM Plex Mono","Cascadia Code",Consolas,monospace;
 }
 *{box-sizing:border-box;margin:0;padding:0}
 html,body{height:100%}
@@ -32,49 +37,77 @@ header{grid-area:header;display:flex;align-items:center;gap:14px;
   display:grid;grid-template-columns:1fr 1fr 1.2fr;gap:0}
 
 /* ---------- header ---------- */
-.logo{font-weight:800;letter-spacing:2px;font-size:17px}
-.logo span{color:var(--accent)}
-.badge{font-size:11px;color:var(--dim);border:1px solid var(--line);
-  border-radius:4px;padding:2px 8px}
-#conn-badge.ok{color:var(--green);border-color:var(--green)}
+.logo{font-weight:700;letter-spacing:4px;font-size:19px;text-transform:uppercase}
+.logo span{color:var(--accent);text-shadow:var(--glow)}
+.badge{font-family:var(--mono);font-size:10px;letter-spacing:1px;color:var(--dim);
+  border:1px solid var(--line2);border-radius:3px;padding:3px 9px;text-transform:uppercase}
+#conn-badge.ok{color:var(--green);border-color:rgba(124,227,139,.5)}
 #conn-badge.bad{color:var(--red);border-color:var(--red);animation:blink 1s infinite}
-#mode-badge{font-weight:700;color:var(--accent);border-color:var(--accent);font-size:13px}
+/* mode annunciator: every mode is a segment, the active one is lit */
+#mode-strip{display:flex;border:1px solid var(--line2);border-radius:3px;overflow:hidden}
+#mode-strip span{font-family:var(--font);font-weight:700;font-size:11px;
+  letter-spacing:1.5px;padding:4px 10px;color:#3d4a5e;border-right:1px solid var(--line);
+  background:var(--panel2);transition:all .25s}
+#mode-strip span:last-child{border-right:none}
+#mode-strip span.on{color:#06110a;background:var(--accent);box-shadow:var(--glow)}
+#mode-strip span.on.warnmode{background:var(--amber);box-shadow:0 0 10px rgba(255,180,84,.4)}
 #clock{margin-left:auto;font-family:var(--mono);font-size:13px;color:var(--dim)}
-.hbtn{background:#182230;color:var(--text);border:1px solid var(--line);
-  border-radius:6px;padding:6px 14px;cursor:pointer;font-size:12px;font-weight:600}
-.hbtn:hover{border-color:var(--accent);color:var(--accent)}
-.hbtn.danger:hover{border-color:var(--red);color:var(--red)}
+.hbtn{background:transparent;color:var(--text);border:1px solid var(--line2);
+  border-radius:3px;padding:6px 14px;cursor:pointer;font-size:12px;font-weight:700;
+  font-family:var(--font);letter-spacing:1.5px;text-transform:uppercase;
+  transition:all .15s}
+.hbtn:hover{border-color:var(--accent);color:var(--accent);box-shadow:var(--glow)}
+.hbtn.danger:hover{border-color:var(--red);color:var(--red);
+  box-shadow:0 0 10px rgba(255,92,92,.35)}
 @keyframes blink{50%{opacity:.35}}
 
 /* ---------- map ---------- */
-#map{position:absolute;inset:0;background:#0a0e13}
-.leaflet-container{background:#0a0e13}
+#map{position:absolute;inset:0;background:#06080c}
+.leaflet-container{background:#06080c;font-family:var(--font)}
+.leaflet-bar a{background:var(--panel)!important;color:var(--text)!important;
+  border-color:var(--line)!important}
+.leaflet-bar a:hover{color:var(--accent)!important}
+.leaflet-control-layers{background:var(--panel)!important;color:var(--text)!important;
+  border:1px solid var(--line2)!important;border-radius:3px!important;
+  font-family:var(--font)!important}
+.leaflet-control-attribution{background:rgba(6,8,12,.7)!important;color:#4a5a70!important}
+.leaflet-control-attribution a{color:#5f7390!important}
+.leaflet-tooltip{background:var(--panel);color:var(--text);border:1px solid var(--line2);
+  font-family:var(--mono);font-size:11px}
+.leaflet-tooltip:before{display:none}
 #map-tools{position:absolute;top:12px;right:12px;z-index:1000;
   display:flex;flex-direction:column;gap:6px}
-#map-tools button{width:150px;text-align:left}
+#map-tools button{width:170px;text-align:left;background:rgba(13,17,24,.88);
+  backdrop-filter:blur(4px)}
 #map-tools button.active{border-color:var(--amber);color:var(--amber)}
-.uav-icon{filter:drop-shadow(0 0 6px rgba(34,211,238,.9))}
-.wp-label{background:var(--accent);color:#03252b;border-radius:50%;width:22px;height:22px;
+.uav-icon{filter:drop-shadow(0 0 7px rgba(124,227,139,.9))}
+.wp-label{background:var(--amber);color:#241503;border-radius:50%;width:22px;height:22px;
   display:flex;align-items:center;justify-content:center;font-weight:800;font-size:11px;
-  border:2px solid #fff;box-shadow:0 0 8px rgba(0,0,0,.6)}
+  font-family:var(--mono);border:2px solid #06080c;box-shadow:0 0 8px rgba(0,0,0,.6)}
 #alert-banner{position:absolute;left:50%;top:12px;transform:translateX(-50%);
   z-index:1100;display:flex;flex-direction:column;gap:6px;pointer-events:none}
-.banner{padding:8px 18px;border-radius:6px;font-weight:700;font-size:13px;
-  box-shadow:0 4px 14px rgba(0,0,0,.5);white-space:nowrap}
-.banner.warning{background:#4a3606;color:var(--amber);border:1px solid var(--amber)}
-.banner.critical{background:#4a0f0f;color:#fecaca;border:1px solid var(--red);
-  animation:blink 1s infinite}
+.banner{padding:8px 18px;border-radius:3px;font-weight:700;font-size:13px;
+  font-family:var(--mono);letter-spacing:.5px;backdrop-filter:blur(4px);
+  box-shadow:0 4px 14px rgba(0,0,0,.5);white-space:nowrap;border-left-width:4px}
+.banner.warning{background:rgba(58,40,8,.92);color:var(--amber);border:1px solid var(--amber);border-left-width:4px}
+.banner.critical{background:rgba(58,12,12,.92);color:#ffd7d7;border:1px solid var(--red);
+  border-left-width:4px;animation:blink 1s infinite}
 
 /* ---------- side panel ---------- */
-.side-title{padding:9px 14px;font-size:11px;font-weight:700;letter-spacing:1.5px;
-  color:var(--dim);border-bottom:1px solid var(--line);background:var(--panel2)}
+.side-title{padding:9px 14px;font-size:12px;font-weight:700;letter-spacing:3px;
+  color:var(--dim);border-bottom:1px solid var(--line);background:var(--panel2);
+  border-left:3px solid var(--accent)}
 #tele-grid{display:grid;grid-template-columns:1fr 1fr;gap:1px;background:var(--line)}
 .tile{background:var(--panel);padding:9px 12px}
-.tile .k{font-size:10px;color:var(--dim);letter-spacing:1px;text-transform:uppercase}
-.tile .v{font-family:var(--mono);font-size:19px;font-weight:600;margin-top:2px}
-.tile .u{font-size:11px;color:var(--dim);margin-left:3px}
+.tile .k{font-size:10px;color:var(--dim);letter-spacing:2px;text-transform:uppercase;
+  font-weight:600}
+.tile .v{font-family:var(--mono);font-size:20px;font-weight:600;margin-top:2px;
+  text-shadow:0 0 12px rgba(220,230,242,.12)}
+.tile .u{font-size:11px;color:var(--dim);margin-left:3px;font-weight:400}
 .tile.wide{grid-column:span 2}
-.v.good{color:var(--green)} .v.warn{color:var(--amber)} .v.crit{color:var(--red)}
+.v.good{color:var(--green);text-shadow:var(--glow)}
+.v.warn{color:var(--amber);text-shadow:0 0 10px rgba(255,180,84,.35)}
+.v.crit{color:var(--red);text-shadow:0 0 10px rgba(255,92,92,.4)}
 #batt-bar{height:6px;background:#1c2733;border-radius:3px;margin-top:6px;overflow:hidden}
 #batt-fill{height:100%;background:var(--green);width:100%;transition:width .5s,background .5s}
 #sig-bars{display:flex;gap:2px;align-items:flex-end;height:18px;margin-top:4px}
@@ -93,13 +126,15 @@ header{grid-area:header;display:flex;align-items:center;gap:14px;
 
 /* ---------- bottom: charts + log ---------- */
 .chart-box{border-right:1px solid var(--line);display:flex;flex-direction:column;min-width:0}
-.chart-box h4{font-size:10px;letter-spacing:1px;color:var(--dim);padding:6px 12px 0}
+.chart-box h4{font-size:10px;letter-spacing:2.5px;color:var(--dim);padding:6px 12px 0;
+  font-weight:700}
 .chart-holder{flex:1;position:relative;min-height:0;padding:4px 8px 8px}
 #log-box{display:flex;flex-direction:column;min-width:0}
 #log-head{display:flex;align-items:center;padding:5px 12px;gap:8px}
-#log-head h4{font-size:10px;letter-spacing:1px;color:var(--dim);flex:1}
-.mini-btn{background:#182230;color:var(--dim);border:1px solid var(--line);
-  border-radius:4px;padding:2px 10px;font-size:10px;cursor:pointer}
+#log-head h4{font-size:10px;letter-spacing:2.5px;color:var(--dim);flex:1;font-weight:700}
+.mini-btn{background:transparent;color:var(--dim);border:1px solid var(--line2);
+  border-radius:3px;padding:2px 10px;font-size:10px;cursor:pointer;
+  font-family:var(--font);font-weight:700;letter-spacing:1px;text-transform:uppercase}
 .mini-btn:hover{color:var(--accent);border-color:var(--accent)}
 #log-list{flex:1;overflow-y:auto;font-family:var(--mono);font-size:11px;
   padding:0 12px 8px;line-height:1.7}
@@ -131,7 +166,9 @@ header{grid-area:header;display:flex;align-items:center;gap:14px;
   <header>
     <div class="logo">XO11 <span>GCS</span></div>
     <div class="badge" id="conn-badge">CONNECTING…</div>
-    <div class="badge" id="mode-badge">—</div>
+    <div id="mode-strip" title="Flight mode">
+      <span data-m="IDLE">IDLE</span><span data-m="TAKEOFF">TKOF</span><span data-m="AUTO">AUTO</span><span data-m="MANUAL">MAN</span><span data-m="HOLD">HOLD</span><span data-m="RTH" class="warnmode">RTH</span><span data-m="LAND" class="warnmode">LAND</span>
+    </div>
     <div class="badge" id="src-badge">SOURCE: —</div>
     <button class="hbtn" id="btn-takeoff">▲ TAKEOFF</button>
     <button class="hbtn" id="btn-auto">AUTO</button>
@@ -184,7 +221,7 @@ header{grid-area:header;display:flex;align-items:center;gap:14px;
           <circle cx="30" cy="30" r="26" fill="none" stroke="#233040" stroke-width="2"/>
           <text x="30" y="10" fill="#7d8fa3" font-size="8" text-anchor="middle">N</text>
           <g id="compass-needle" transform="rotate(0 30 30)">
-            <polygon points="30,10 34,34 30,29 26,34" fill="#22d3ee"/>
+            <polygon points="30,10 34,34 30,29 26,34" fill="#7ce38b"/>
           </g>
           <text id="compass-val" x="30" y="52" fill="#d7e1ec" font-size="9"
             text-anchor="middle" font-family="monospace">0°</text>
@@ -235,15 +272,23 @@ const S = {
 
 /* ---------------- map ---------------- */
 const map = L.map("map", { zoomControl: true }).setView([12.9716, 77.5946], 15);
-L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-  maxZoom: 19, attribution: "© OpenStreetMap"
-}).addTo(map);
+const baseLayers = {
+  "Dark ops": L.tileLayer("https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png", {
+    maxZoom: 20, subdomains: "abcd", attribution: "© OpenStreetMap © CARTO" }),
+  "Streets": L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19, attribution: "© OpenStreetMap" }),
+  "Satellite": L.tileLayer(
+    "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}", {
+    maxZoom: 19, attribution: "© Esri" })
+};
+baseLayers["Dark ops"].addTo(map);
+L.control.layers(baseLayers, null, { position: "bottomleft" }).addTo(map);
 
 const uavIcon = L.divIcon({
   className: "", iconSize: [34, 34], iconAnchor: [17, 17],
   html: `<svg class="uav-icon" id="uav-svg" width="34" height="34" viewBox="0 0 34 34">
     <g id="uav-rot" transform="rotate(0 17 17)">
-      <polygon points="17,3 24,26 17,20 10,26" fill="#22d3ee" stroke="#fff" stroke-width="1.2"/>
+      <polygon points="17,3 24,26 17,20 10,26" fill="#7ce38b" stroke="#eafff0" stroke-width="1.2"/>
     </g></svg>`
 });
 const homeIcon = L.divIcon({
@@ -257,8 +302,8 @@ const homeIcon = L.divIcon({
 const uavMarker  = L.marker([12.9716, 77.5946], { icon: uavIcon, zIndexOffset: 1000 }).addTo(map);
 const homeMarker = L.marker([12.9716, 77.5946], { icon: homeIcon }).addTo(map)
   .bindTooltip("Home / Launch point");
-const trail   = L.polyline([], { color: "#22d3ee", weight: 2.5, opacity: 0.85 }).addTo(map);
-const missionLine = L.polyline([], { color: "#fbbf24", weight: 2, dashArray: "6 6" }).addTo(map);
+const trail   = L.polyline([], { color: "#7ce38b", weight: 2.5, opacity: 0.85 }).addTo(map);
+const missionLine = L.polyline([], { color: "#ffb454", weight: 2, dashArray: "6 6" }).addTo(map);
 let wpMarkers = [];
 let fenceCircle = null;
 
@@ -308,8 +353,9 @@ map.on("click", e => {
 map.on("dragstart", () => { S.follow = false; });
 
 /* ---------------- charts ---------------- */
-Chart.defaults.color = "#7d8fa3";
+Chart.defaults.color = "#6e7f97";
 Chart.defaults.font.size = 10;
+Chart.defaults.font.family = '"IBM Plex Mono", monospace';
 const MAXPTS = 120;
 function mkChart(ctx, datasets, y2) {
   return new Chart(ctx, {
@@ -322,7 +368,7 @@ function mkChart(ctx, datasets, y2) {
         labels: { boxWidth: 8, boxHeight: 8 } } },
       scales: {
         x: { display: false },
-        y: { grid: { color: "#1a2430" }, beginAtZero: true },
+        y: { grid: { color: "#131a26" }, beginAtZero: true },
         ...(y2 ? { y2: { position: "right", grid: { display: false }, beginAtZero: true } } : {})
       },
       elements: { point: { radius: 0 }, line: { borderWidth: 1.6, tension: 0.35 } }
@@ -330,11 +376,11 @@ function mkChart(ctx, datasets, y2) {
   });
 }
 const chAlt = mkChart($("chart-alt").getContext("2d"),
-  [{ label: "Altitude", data: [], borderColor: "#22d3ee",
-     backgroundColor: "rgba(34,211,238,.08)", fill: true }]);
+  [{ label: "Altitude", data: [], borderColor: "#7ce38b",
+     backgroundColor: "rgba(124,227,139,.07)", fill: true }]);
 const chBatt = mkChart($("chart-batt").getContext("2d"),
-  [{ label: "Battery %", data: [], borderColor: "#34d399", yAxisID: "y" },
-   { label: "Gnd speed", data: [], borderColor: "#fbbf24", yAxisID: "y2" }], true);
+  [{ label: "Battery %", data: [], borderColor: "#7ce38b", yAxisID: "y" },
+   { label: "Gnd speed", data: [], borderColor: "#ffb454", yAxisID: "y2" }], true);
 
 function pushChart(ch, ...vals) {
   ch.data.labels.push("");
@@ -362,8 +408,9 @@ function render(tele) {
   S.lastTele = tele;
   if (tele.lat == null) return;
 
-  // header
-  $("mode-badge").textContent = tele.mode || "—";
+  // header: light the active segment of the mode annunciator
+  document.querySelectorAll("#mode-strip span").forEach(s =>
+    s.classList.toggle("on", s.dataset.m === tele.mode));
   $("clock").textContent = new Date().toLocaleTimeString();
 
   // map
@@ -800,32 +847,37 @@ class DemoSim {
 class DemoAlerts {
   constructor() {
     this.active = [];
+    this.pending = {};   // id -> first ms the trigger was true (debounce)
     this.rules = [
       ["BATTERY_CRITICAL", "critical", t => t.battery_pct < 15, t => t.battery_pct >= 17,
-        t => `Battery CRITICAL: ${t.battery_pct.toFixed(0)}% (${t.battery_voltage.toFixed(1)} V) — land immediately`],
+        t => `Battery CRITICAL: ${t.battery_pct.toFixed(0)}% (${t.battery_voltage.toFixed(1)} V) — land immediately`, 0],
       ["BATTERY_LOW", "warning", t => t.battery_pct < 25 && t.battery_pct >= 15, t => t.battery_pct >= 27,
-        t => `Battery LOW: ${t.battery_pct.toFixed(0)}% (${t.battery_voltage.toFixed(1)} V)`],
+        t => `Battery LOW: ${t.battery_pct.toFixed(0)}% (${t.battery_voltage.toFixed(1)} V)`, 0],
       ["GPS_LOST", "warning", t => t.sats < 6, t => t.sats >= 7,
-        t => `GPS degraded: only ${t.sats} satellites locked`],
+        t => `GPS degraded: only ${t.sats} satellites locked`, 3000],
       ["SIGNAL_WEAK", "warning", t => t.signal_pct < 35, t => t.signal_pct >= 45,
-        t => `Signal WEAK: link quality ${t.signal_pct.toFixed(0)}%`],
+        t => `Signal WEAK: link quality ${t.signal_pct.toFixed(0)}%`, 3000],
     ];
   }
   evaluate(t) {
-    const changes = [];
-    this.rules.forEach(([id, sev, trig, clear, msg]) => {
+    const changes = [], now = Date.now();
+    this.rules.forEach(([id, sev, trig, clear, msg, persist]) => {
       const idx = this.active.findIndex(a => a.id === id);
-      if (idx === -1 && trig(t)) {
+      if (idx === -1) {
+        if (!trig(t)) { delete this.pending[id]; return; }
+        if (this.pending[id] == null) this.pending[id] = now;
+        if (now - this.pending[id] < persist) return;   // must persist first
+        delete this.pending[id];
         const a = { id, severity: sev, message: msg(t),
           raised_at: new Date().toISOString() };
         this.active.push(a);
         addLogLines([logEntry("ALERT", a.message, sev)]);
         changes.push({ action: "raised", ...a });
-      } else if (idx !== -1 && clear(t)) {
+      } else if (clear(t)) {
         const [a] = this.active.splice(idx, 1);
         addLogLines([logEntry("ALERT", `Cleared: ${id.replace(/_/g, " ")}`, "info")]);
         changes.push({ action: "cleared", ...a });
-      } else if (idx !== -1) {
+      } else {
         this.active[idx].message = msg(t);   // keep live values in banner
       }
     });

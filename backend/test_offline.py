@@ -113,27 +113,45 @@ ids = {c["id"] for c in ch if c["action"] == "raised"}
 check("CRITICAL raised at 14%", "BATTERY_CRITICAL" in ids)
 check("LOW suppressed when CRITICAL", "BATTERY_LOW" not in ids)
 
-a3 = AlertEngine(MissionLog())
-ch = a3.evaluate(tele(sats=5))
-check("GPS_LOST raised at 5 sats", any(c["id"] == "GPS_LOST" for c in ch))
-ch = a3.evaluate(tele(sats=6))
-check("GPS holds at 6 sats (hysteresis)", len(a3.snapshot()) == 1)
-ch = a3.evaluate(tele(sats=8))
-check("GPS cleared at 8 sats", len(a3.snapshot()) == 0)
+# --- persistence/debounce tests use a controllable clock ---
+CLK = {"t": 1000.0}
+_real_time_fn = time.time
+time.time = lambda: CLK["t"]
+try:
+    a3 = AlertEngine(MissionLog())
+    a3.evaluate(tele(sats=5))
+    check("GPS_LOST not raised instantly (3s debounce)", not a3.snapshot())
+    CLK["t"] += 3.1
+    a3.evaluate(tele(sats=5))
+    check("GPS_LOST raised after sustained 3s", len(a3.snapshot()) == 1)
+    a3.evaluate(tele(sats=6))
+    check("GPS holds at 6 sats (hysteresis)", len(a3.snapshot()) == 1)
+    a3.evaluate(tele(sats=8))
+    check("GPS cleared at 8 sats", len(a3.snapshot()) == 0)
 
-a4 = AlertEngine(MissionLog())
-a4.evaluate(tele(signal_pct=30))
-check("SIGNAL_WEAK raised at 30%", len(a4.snapshot()) == 1)
-a4.evaluate(tele(signal_pct=40))
-check("SIGNAL holds at 40% (hysteresis)", len(a4.snapshot()) == 1)
-a4.evaluate(tele(signal_pct=50))
-check("SIGNAL cleared at 50%", len(a4.snapshot()) == 0)
+    a3b = AlertEngine(MissionLog())
+    a3b.evaluate(tele(sats=5)); CLK["t"] += 1.0
+    a3b.evaluate(tele(sats=9)); CLK["t"] += 3.0     # blip recovers -> reset
+    a3b.evaluate(tele(sats=5))
+    check("brief GPS blip never raises (no flapping)", not a3b.snapshot())
 
-a5 = AlertEngine(MissionLog())
-a5.evaluate(tele(link_ok=False))
-check("LINK_LOST raised", len(a5.snapshot()) == 1)
-a5.evaluate({"link_ok": False})   # missing keys must not crash
-check("alert engine survives sparse telemetry", True)
+    a4 = AlertEngine(MissionLog())
+    a4.evaluate(tele(signal_pct=30)); CLK["t"] += 3.1
+    a4.evaluate(tele(signal_pct=30))
+    check("SIGNAL_WEAK raised after sustained 3s", len(a4.snapshot()) == 1)
+    a4.evaluate(tele(signal_pct=40))
+    check("SIGNAL holds at 40% (hysteresis)", len(a4.snapshot()) == 1)
+    a4.evaluate(tele(signal_pct=50))
+    check("SIGNAL cleared at 50%", len(a4.snapshot()) == 0)
+
+    a5 = AlertEngine(MissionLog())
+    a5.evaluate(tele(link_ok=False)); CLK["t"] += 2.1
+    a5.evaluate(tele(link_ok=False))
+    check("LINK_LOST raised after 2s", len(a5.snapshot()) == 1)
+    a5.evaluate({"link_ok": False})   # missing keys must not crash
+    check("alert engine survives sparse telemetry", True)
+finally:
+    time.time = _real_time_fn
 
 # ---- hardening regression cases ----
 a6 = AlertEngine(MissionLog())
